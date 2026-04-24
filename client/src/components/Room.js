@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 
-const socket = io('http://18.143.90.78:5000');
+const socket = io('https://18.143.90.78', {
+  transports: ['websocket', 'polling']
+});
 
 function Room({ roomId, username }) {
   const [users, setUsers] = useState([]);
