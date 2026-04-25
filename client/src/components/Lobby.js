@@ -82,7 +82,7 @@ function Lobby({ onJoin }) {
 
   return (
     <div style={styles.container}>
-      <h1 style={styles.title}>🎙️ Pinnacle</h1>
+      <h1 style={styles.title}>🎙️ Warp</h1>
       <p style={styles.subtitle}>Join a voice channel</p>
       <input
         style={styles.input}

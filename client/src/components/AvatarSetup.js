@@ -39,7 +39,7 @@ function AvatarSetup({ onDone }) {
 
       <div style={{ ...styles.card, backgroundColor: theme.surface, border: `1px solid ${theme.border}` }}>
 
-        <h1 style={{ ...styles.title, color: theme.accent }}>Pinnacle</h1>
+        <h1 style={{ ...styles.title, color: theme.accent }}>Warp</h1>
         <p style={{ ...styles.subtitle, color: theme.textSecondary }}>Set up your profile to get started</p>
 
         {/* Avatar Preview */}

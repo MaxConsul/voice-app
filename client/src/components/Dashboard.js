@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { io } from 'socket.io-client';
-
 import { SOCKET_URL } from '../config';
+import AdminPanel from './AdminPanel';
 
 const socket = io(SOCKET_URL, {
   transports: ['websocket', 'polling']
@@ -48,6 +48,7 @@ function Dashboard({ profile, onJoinRoom }) {
   });
   const [error, setError] = useState('');
   const [joining, setJoining] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const saveRoom = (code, name) => {
     const updated = [
@@ -108,7 +109,7 @@ function Dashboard({ profile, onJoinRoom }) {
       {/* Sidebar */}
       <div style={{ ...styles.sidebar, backgroundColor: theme.surface, borderRight: `1px solid ${theme.border}` }}>
         <div style={styles.sidebarTop}>
-          <h2 style={{ ...styles.logo, color: theme.accent }}>Pinnacle</h2>
+          <h2 style={{ ...styles.logo, color: theme.accent }}>Warp</h2>
 
           <nav style={styles.nav}>
             {[
@@ -129,6 +130,14 @@ function Dashboard({ profile, onJoinRoom }) {
                 {item.label}
               </button>
             ))}
+
+            {/* Admin button */}
+            <button
+              onClick={() => setShowAdmin(true)}
+              style={{ ...styles.navBtn, color: theme.danger, backgroundColor: 'transparent', marginTop: '8px' }}
+            >
+              🔐 Admin
+            </button>
           </nav>
         </div>
 
@@ -227,7 +236,7 @@ function Dashboard({ profile, onJoinRoom }) {
                 <Avatar profile={profile} size={50} />
                 <div>
                   <p style={{ color: theme.text, fontWeight: '700', fontSize: '1.1rem' }}>{profile.username}</p>
-                  <p style={{ color: theme.textSecondary, fontSize: '0.85rem' }}>You will be the room owner 👑</p>
+                  <p style={{ color: theme.textSecondary, fontSize: '0.85rem' }}>You will be the room owner 🎖️</p>
                 </div>
               </div>
 
@@ -324,6 +333,10 @@ function Dashboard({ profile, onJoinRoom }) {
           </div>
         )}
       </div>
+
+      {/* Admin Panel */}
+      {showAdmin && <AdminPanel onClose={() => setShowAdmin(false)} />}
+
     </div>
   );
 }
@@ -345,7 +358,7 @@ const styles = {
   heading: { fontSize: '1.8rem', fontWeight: '800', marginBottom: '8px', letterSpacing: '-0.5px' },
   sectionTitle: { fontSize: '1.2rem', fontWeight: '700', margin: '2rem 0 1rem' },
   homeCards: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '2rem' },
-  homeCard: { borderRadius: '16px', padding: '24px', transition: 'transform 0.15s ease', },
+  homeCard: { borderRadius: '16px', padding: '24px', transition: 'transform 0.15s ease' },
   homeCardIcon: { width: '52px', height: '52px', borderRadius: '14px', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '14px' },
   box: { borderRadius: '16px', padding: '28px', display: 'flex', flexDirection: 'column', gap: '16px' },
   avatarRow: { display: 'flex', alignItems: 'center', gap: '14px' },

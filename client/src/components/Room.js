@@ -55,6 +55,8 @@ function Room({ roomInfo, profile, socket, onLeave }) {
   const [copied, setCopied] = useState(false);
   const [userStatuses, setUserStatuses] = useState({});
   const [soundboardOpen, setSoundboardOpen] = useState(false);
+  const [ownerId, setOwnerId] = useState(null);
+  const [showTransferMenu, setShowTransferMenu] = useState(null);
 
   const peersRef = useRef({});
   const streamRef = useRef(null);
@@ -109,6 +111,17 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       socket.on('joined-success', ({ isOwner }) => setIsOwner(isOwner));
       socket.on('you-are-owner', () => setIsOwner(true));
 
+      socket.on('owner-changed', (newOwnerId) => {
+        setOwnerId(newOwnerId);
+        setIsOwner(newOwnerId === socket.id);
+      });
+
+      socket.on('owner-transferred', () => {
+        setIsOwner(false);
+        setToast({ username: '🎖️ Ownership', message: 'You passed ownership', type: 'text' });
+        setTimeout(() => setToast(null), 3500);
+      });
+
       socket.on('existing-users', (existingUsers) => {
         setUsers(existingUsers);
         existingUsers.forEach(user => createOffer(user.id, stream));
@@ -118,7 +131,7 @@ function Room({ roomInfo, profile, socket, onLeave }) {
         setUsers(prev => [...prev, user]);
         playSound(520, 660);
         if (document.hidden) {
-          new Notification('Pinnacle', { body: `${user.username} joined the room` });
+          new Notification('Warp', { body: `${user.username} joined the room` });
         }
       });
 
@@ -152,8 +165,13 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       socket.on('join-request', ({ id, username: requester }) => {
         setJoinRequests(prev => [...prev, { id, username: requester }]);
         if (document.hidden) {
-          new Notification('Pinnacle', { body: `${requester} wants to join` });
+          new Notification('Warp', { body: `${requester} wants to join` });
         }
+      });
+
+      socket.on('room-dissolved', () => {
+        alert('This room was closed by an admin.');
+        onLeave();
       });
 
       socket.on('user-status', ({ id, muted, deafened }) => {
@@ -270,6 +288,13 @@ function Room({ roomInfo, profile, socket, onLeave }) {
     setJoinRequests(prev => prev.filter(r => r.id !== guestId));
   };
 
+  const transferOwnership = (targetId, targetUsername) => {
+    socket.emit('transfer-ownership', roomId, targetId);
+    setShowTransferMenu(null);
+    setToast({ username: '🎖️ Ownership Passed', message: `${targetUsername} is now the room owner`, type: 'text' });
+    setTimeout(() => setToast(null), 3500);
+  };
+
   const sendMessage = () => {
     if (!messageInput.trim()) return;
     socket.emit('chat-message', roomId, messageInput, username);
@@ -384,33 +409,69 @@ function Room({ roomInfo, profile, socket, onLeave }) {
           </p>
 
           {/* You */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', marginBottom: '4px', backgroundColor: theme.card }}>
-            <Avatar profile={profile} size={36} speaking={speaking} muted={muted} deafened={deafened} />
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{username} (you)</p>
-              <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>
-                {deafened ? 'Deafened' : muted ? 'Muted' : speaking ? 'Speaking...' : 'Connected'}
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {username} (you)
               </p>
+              {isOwner && (
+                <span style={{ fontSize: '0.7rem', backgroundColor: theme.warning + '33', color: theme.warning, padding: '1px 6px', borderRadius: '8px', fontWeight: '700', flexShrink: 0 }}>
+                  OWNER
+                </span>
+              )}
             </div>
+            <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>
+              {deafened ? 'Deafened' : muted ? 'Muted' : speaking ? 'Speaking...' : 'Connected'}
+            </p>
           </div>
 
           {/* Others */}
           {users.map(user => {
             const status = userStatuses[user.id] || {};
+            const isUserOwner = ownerId === user.id;
             return (
-              <div key={user.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', marginBottom: '4px' }}>
-                <Avatar
-                  profile={{ initials: user.username[0].toUpperCase(), color: '#3498db', photo: null }}
-                  size={36}
-                  muted={status.muted}
-                  deafened={status.deafened}
-                />
-                <div style={{ flex: 1, overflow: 'hidden' }}>
-                  <p style={{ color: theme.text, fontWeight: '600', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{user.username}</p>
-                  <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>
-                    {status.deafened ? 'Deafened' : status.muted ? 'Muted' : 'Connected'}
-                  </p>
+              <div key={user.id}>
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', marginBottom: '4px', cursor: isOwner ? 'pointer' : 'default', position: 'relative' }}
+                  onClick={() => isOwner && setShowTransferMenu(showTransferMenu === user.id ? null : user.id)}
+                >
+                  <Avatar
+                    profile={{ initials: user.username[0].toUpperCase(), color: '#3498db', photo: null }}
+                    size={36}
+                    muted={status.muted}
+                    deafened={status.deafened}
+                  />
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <p style={{ color: theme.text, fontWeight: '600', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {user.username}
+                      </p>
+                      {isUserOwner && (
+                        <span style={{ fontSize: '0.7rem', backgroundColor: theme.warning + '33', color: theme.warning, padding: '1px 6px', borderRadius: '8px', fontWeight: '700', flexShrink: 0 }}>
+                          OWNER
+                        </span>
+                      )}
+                    </div>
+                    <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>
+                      {status.deafened ? 'Deafened' : status.muted ? 'Muted' : 'Connected'}
+                    </p>
+                  </div>
+                  {isOwner && (
+                    <span style={{ color: theme.textSecondary, fontSize: '0.7rem' }}>•••</span>
+                  )}
                 </div>
+
+                {/* Transfer ownership menu */}
+                {showTransferMenu === user.id && isOwner && (
+                  <div style={{ backgroundColor: theme.card, border: `1px solid ${theme.border}`, borderRadius: '10px', padding: '6px', marginBottom: '6px', marginLeft: '46px' }}>
+                    <button
+                      onClick={() => transferOwnership(user.id, user.username)}
+                      style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.warning + '22', color: theme.warning, cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem', textAlign: 'left' }}
+                    >
+                      👑 Pass crown to {user.username}
+                    </button>
+                  </div>
+                )}
               </div>
             );
           })}

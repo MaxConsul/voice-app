@@ -5,108 +5,225 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors({ origin: "*" }));
+app.use(express.json());
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-const rooms = {};
+// Data structures
+const servers = {};   // { serverId: { id, name, icon, ownerId, ownerName, members[], channels[] } }
+const channels = {};  // { channelId: { users[], messages[] } }
+
+// Helpers
+const generateCode = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const rand = (n) => Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  return `${rand(3)}-${rand(3)}`;
+};
+
+const getServerSummary = (srv) => ({
+  id: srv.id,
+  name: srv.name,
+  icon: srv.icon,
+  ownerId: srv.ownerId,
+  ownerName: srv.ownerName,
+  memberCount: srv.members.length,
+  channels: srv.channels,
+});
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  console.log('Connected:', socket.id);
 
-  socket.on('check-room', (roomId) => {
-    const room = rooms[roomId];
-    const hasOwner = room && room.length > 0;
-    socket.emit('room-status', { hasOwner });
+  // ── Create Server ─────────────────────────────────────────────
+  socket.on('create-server', ({ name, icon, username }) => {
+    const id = generateCode();
+    const defaultChannels = [
+      { id: generateCode(), name: 'General', type: 'voice' },
+    ];
+
+    servers[id] = {
+      id, name, icon,
+      ownerId: socket.id,
+      ownerName: username,
+      members: [{ id: socket.id, username, isAdmin: true }],
+      channels: defaultChannels,
+    };
+
+    // Init channel data
+    defaultChannels.forEach(ch => {
+      channels[ch.id] = { users: [], messages: [] };
+    });
+
+    socket.join(`server:${id}`);
+    socket.emit('server-created', getServerSummary(servers[id]));
+    console.log(`${username} created server "${name}" (${id})`);
   });
 
-  socket.on('join-room', (roomId, username) => {
-    socket.join(roomId);
-    if (!rooms[roomId]) rooms[roomId] = [];
-    rooms[roomId].push({ id: socket.id, username, isOwner: rooms[roomId].length === 0 });
+  // ── Join Server ───────────────────────────────────────────────
+  socket.on('join-server', ({ serverId, username }) => {
+    const srv = servers[serverId];
+    if (!srv) { socket.emit('server-error', 'Server not found. Check the invite code.'); return; }
 
-    socket.to(roomId).emit('user-joined', { id: socket.id, username });
-    socket.emit('existing-users', rooms[roomId].filter(u => u.id !== socket.id));
-    socket.emit('joined-success', { isOwner: rooms[roomId].find(u => u.id === socket.id)?.isOwner });
-    console.log(`${username} joined room ${roomId}`);
-  });
-
-  socket.on('request-join', (roomId, username) => {
-    const room = rooms[roomId];
-    if (!room || room.length === 0) {
-      socket.emit('join-approved');
-      return;
+    const alreadyMember = srv.members.find(m => m.id === socket.id);
+    if (!alreadyMember) {
+      srv.members.push({ id: socket.id, username, isAdmin: false });
     }
-    const owner = room.find(u => u.isOwner);
-    if (owner) {
-      io.to(owner.id).emit('join-request', { id: socket.id, username });
+
+    socket.join(`server:${serverId}`);
+    socket.emit('server-joined', getServerSummary(srv));
+    socket.to(`server:${serverId}`).emit('member-joined', { id: socket.id, username });
+    console.log(`${username} joined server "${srv.name}" (${serverId})`);
+  });
+
+  // ── Create Channel ────────────────────────────────────────────
+  socket.on('create-channel', ({ serverId, name }) => {
+    const srv = servers[serverId];
+    if (!srv) return;
+
+    const member = srv.members.find(m => m.id === socket.id);
+    if (!member?.isAdmin) { socket.emit('server-error', 'Only admins can create channels.'); return; }
+
+    const ch = { id: generateCode(), name, type: 'voice' };
+    srv.channels.push(ch);
+    channels[ch.id] = { users: [], messages: [] };
+
+    io.to(`server:${serverId}`).emit('channel-created', ch);
+    console.log(`Channel "${name}" created in server ${serverId}`);
+  });
+
+  // ── Delete Channel ────────────────────────────────────────────
+  socket.on('delete-channel', ({ serverId, channelId }) => {
+    const srv = servers[serverId];
+    if (!srv) return;
+
+    const member = srv.members.find(m => m.id === socket.id);
+    if (!member?.isAdmin) { socket.emit('server-error', 'Only admins can delete channels.'); return; }
+    if (srv.channels.length <= 1) { socket.emit('server-error', 'Server must have at least one channel.'); return; }
+
+    srv.channels = srv.channels.filter(c => c.id !== channelId);
+    delete channels[channelId];
+
+    io.to(`server:${serverId}`).emit('channel-deleted', channelId);
+  });
+
+  // ── Join Channel (voice) ──────────────────────────────────────
+  socket.on('join-channel', ({ channelId, serverId, username }) => {
+    if (!channels[channelId]) return;
+
+    // Leave previous channel
+    const prevChannel = Object.entries(channels).find(([, ch]) =>
+      ch.users.find(u => u.id === socket.id)
+    );
+    if (prevChannel) {
+      const [prevId, prevCh] = prevChannel;
+      prevCh.users = prevCh.users.filter(u => u.id !== socket.id);
+      socket.leave(`channel:${prevId}`);
+      socket.to(`channel:${prevId}`).emit('user-left-channel', { userId: socket.id, channelId: prevId });
+      // WebRTC cleanup
+      socket.to(`channel:${prevId}`).emit('user-left', socket.id);
     }
+
+    // Join new channel
+    channels[channelId].users.push({ id: socket.id, username });
+    socket.join(`channel:${channelId}`);
+
+    // Tell others in channel
+    socket.to(`channel:${channelId}`).emit('user-joined-channel', { id: socket.id, username, channelId });
+
+    // Send existing users to new joiner
+    const existing = channels[channelId].users.filter(u => u.id !== socket.id);
+    socket.emit('channel-existing-users', { users: existing, channelId });
+
+    // Update channel user counts for everyone in server
+    io.to(`server:${serverId}`).emit('channel-users-updated', {
+      channelId,
+      users: channels[channelId].users,
+    });
+
+    console.log(`${username} joined channel ${channelId}`);
   });
 
-  socket.on('approve-join', (roomId, guestId, guestUsername) => {
-    io.to(guestId).emit('join-approved');
+  // ── Leave Channel ─────────────────────────────────────────────
+  socket.on('leave-channel', ({ channelId, serverId }) => {
+    if (!channels[channelId]) return;
+    channels[channelId].users = channels[channelId].users.filter(u => u.id !== socket.id);
+    socket.leave(`channel:${channelId}`);
+    socket.to(`channel:${channelId}`).emit('user-left', socket.id);
+    io.to(`server:${serverId}`).emit('channel-users-updated', {
+      channelId,
+      users: channels[channelId].users,
+    });
   });
 
-  socket.on('reject-join', (roomId, guestId) => {
-    io.to(guestId).emit('join-rejected');
-  });
-
-  socket.on('chat-message', (roomId, message, username, type = 'text') => {
-    io.to(roomId).emit('chat-message', {
+  // ── Chat Message ──────────────────────────────────────────────
+  socket.on('chat-message', (channelId, message, username, type = 'text') => {
+    io.to(`channel:${channelId}`).emit('chat-message', {
       username, message, type,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     });
   });
 
-  socket.on('chat-image', (roomId, imageData, username) => {
-    io.to(roomId).emit('chat-message', {
-      username,
-      message: imageData,
-      type: 'image',
+  socket.on('chat-image', (channelId, imageData, username) => {
+    io.to(`channel:${channelId}`).emit('chat-message', {
+      username, message: imageData, type: 'image',
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     });
   });
 
-  socket.on('chat-message', (roomId, message, username, type = 'text') => {
-    io.to(roomId).emit('chat-message', {
-      username, message, type,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    });
+  // ── User Status ───────────────────────────────────────────────
+  socket.on('user-status', (channelId, status) => {
+    socket.to(`channel:${channelId}`).emit('user-status', { id: socket.id, ...status });
   });
 
-  socket.on('disconnect', () => {
-    for (const roomId in rooms) {
-      const user = rooms[roomId].find(u => u.id === socket.id);
-      if (user) {
-        if (user.isOwner && rooms[roomId].length > 1) {
-          rooms[roomId] = rooms[roomId].filter(u => u.id !== socket.id);
-          rooms[roomId][0].isOwner = true;
-          io.to(rooms[roomId][0].id).emit('you-are-owner');
-        } else {
-          rooms[roomId] = rooms[roomId].filter(u => u.id !== socket.id);
-        }
-        io.to(roomId).emit('user-left', socket.id);
-      }
-    }
-    console.log('User disconnected:', socket.id);
+  // ── Soundboard ────────────────────────────────────────────────
+  socket.on('play-sound', (channelId, soundData, soundName) => {
+    socket.to(`channel:${channelId}`).emit('play-sound', { soundData, soundName });
   });
 
+  // ── WebRTC passthrough ────────────────────────────────────────
   socket.on('offer', (data) => socket.to(data.target).emit('offer', { ...data, from: socket.id }));
   socket.on('answer', (data) => socket.to(data.target).emit('answer', { ...data, from: socket.id }));
   socket.on('ice-candidate', (data) => socket.to(data.target).emit('ice-candidate', { ...data, from: socket.id }));
 
-  // User status (mute/deafen)
-  socket.on('user-status', (roomId, status) => {
-    socket.to(roomId).emit('user-status', { id: socket.id, ...status });
-  });
+  // ── Disconnect ────────────────────────────────────────────────
+  socket.on('disconnect', () => {
+    // Remove from all channels
+    Object.entries(channels).forEach(([channelId, ch]) => {
+      if (ch.users.find(u => u.id === socket.id)) {
+        ch.users = ch.users.filter(u => u.id !== socket.id);
+        socket.to(`channel:${channelId}`).emit('user-left', socket.id);
+        // Update server members of channel change
+        Object.entries(servers).forEach(([serverId, srv]) => {
+          if (srv.channels.find(c => c.id === channelId)) {
+            io.to(`server:${serverId}`).emit('channel-users-updated', {
+              channelId, users: ch.users
+            });
+          }
+        });
+      }
+    });
 
-  // Soundboard
-  socket.on('play-sound', (roomId, soundData, soundName) => {
-    socket.to(roomId).emit('play-sound', { soundData, soundName });
-  });
+    // Remove from servers
+    Object.values(servers).forEach(srv => {
+      srv.members = srv.members.filter(m => m.id !== socket.id);
+      if (srv.members.length === 0) {
+        // Clean up empty server
+        srv.channels.forEach(ch => delete channels[ch.id]);
+        delete servers[srv.id];
+        console.log(`Server ${srv.id} deleted (empty)`);
+      } else if (srv.ownerId === socket.id) {
+        // Transfer ownership
+        srv.ownerId = srv.members[0].id;
+        srv.members[0].isAdmin = true;
+        io.to(srv.members[0].id).emit('you-are-admin', srv.id);
+        io.to(`server:${srv.id}`).emit('owner-changed', srv.members[0].id);
+      }
+    });
 
+    console.log('Disconnected:', socket.id);
+  });
 });
 
 server.listen(5000, () => console.log('Server running on port 5000'));
