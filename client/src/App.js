@@ -1,24 +1,49 @@
 import { useState } from 'react';
-import Lobby from './components/Lobby';
+import { useTheme } from './context/ThemeContext';
+import AvatarSetup from './components/AvatarSetup';
+import Dashboard from './components/Dashboard';
 import Room from './components/Room';
 
 function App() {
-  const [joined, setJoined] = useState(false);
-  const [roomId, setRoomId] = useState('');
-  const [username, setUsername] = useState('');
+  const { theme } = useTheme();
+  const [screen, setScreen] = useState('avatar');
+  const [profile, setProfile] = useState(null);
+  const [roomInfo, setRoomInfo] = useState(null);
+  const [socket, setSocket] = useState(null);
 
-  const handleJoin = (room, name) => {
-    setRoomId(room);
-    setUsername(name);
-    setJoined(true);
+  const handleAvatarDone = (profileData) => {
+    setProfile(profileData);
+    setScreen('dashboard');
+  };
+
+  const handleJoinRoom = (room, sock) => {
+    setRoomInfo(room);
+    setSocket(sock);
+    setScreen('room');
+  };
+
+  const handleLeaveRoom = () => {
+    setRoomInfo(null);
+    setSocket(null);
+    setScreen('dashboard');
   };
 
   return (
-    <div>
-      {!joined
-        ? <Lobby onJoin={handleJoin} />
-        : <Room roomId={roomId} username={username} />
-      }
+    <div style={{ backgroundColor: theme.bg, minHeight: '100vh', color: theme.text }}>
+      {screen === 'avatar' && (
+        <AvatarSetup onDone={handleAvatarDone} />
+      )}
+      {screen === 'dashboard' && (
+        <Dashboard profile={profile} onJoinRoom={handleJoinRoom} />
+      )}
+      {screen === 'room' && (
+        <Room
+          roomInfo={roomInfo}
+          profile={profile}
+          socket={socket}
+          onLeave={handleLeaveRoom}
+        />
+      )}
     </div>
   );
 }
