@@ -2,10 +2,7 @@ import { useState, useEffect } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { io } from 'socket.io-client';
 
-const SOCKET_URL =
-  window.location.hostname === 'localhost'
-    ? 'http://localhost:5000'
-    : 'https://18.143.90.78:5000';
+import { SOCKET_URL } from '../config';
 
 const socket = io(SOCKET_URL, {
   transports: ['websocket', 'polling']
