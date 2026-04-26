@@ -198,7 +198,6 @@ function App() {
       ) : (
         <div style={{ width: '240px', backgroundColor: theme.surface, borderRight: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <div style={{ textAlign: 'center', padding: '20px' }}>
-            <p style={{ fontSize: '2rem', marginBottom: '8px' }}>👈</p>
             <p style={{ color: theme.textSecondary, fontSize: '0.88rem' }}>Create or join a server to get started</p>
           </div>
         </div>
@@ -216,7 +215,6 @@ function App() {
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: theme.bg }}>
           <div style={{ textAlign: 'center' }}>
-            <p style={{ fontSize: '3rem', marginBottom: '12px' }}>🎙️</p>
             <h2 style={{ color: theme.text, fontWeight: '800', marginBottom: '8px' }}>
               {activeServer ? `Welcome to ${activeServer.name}!` : 'Welcome!'}
             </h2>

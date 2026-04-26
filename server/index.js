@@ -1,3 +1,5 @@
+const ytdl = require('ytdl-core');
+const yts = require('yt-search');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -13,8 +15,10 @@ const io = new Server(server, {
 });
 
 // Data structures
-const servers = {};   // { serverId: { id, name, icon, ownerId, ownerName, members[], channels[] } }
-const channels = {};  // { channelId: { users[], messages[] } }
+const servers = {};
+const channels = {};
+const audexQueues = {};
+const audexActive = {};
 
 // Helpers
 const generateCode = () => {
@@ -27,17 +31,85 @@ const getServerSummary = (srv) => ({
   id: srv.id,
   name: srv.name,
   icon: srv.icon,
+  photo: srv.photo || null,
   ownerId: srv.ownerId,
   ownerName: srv.ownerName,
   memberCount: srv.members.length,
   channels: srv.channels,
 });
 
+const getAudexState = (channelId) => {
+  if (!audexQueues[channelId]) {
+    audexQueues[channelId] = { queue: [], playing: false, current: null, timer: null };
+  }
+  return audexQueues[channelId];
+};
+
+const audexMessage = (channelId, message) => {
+  io.to(`channel:${channelId}`).emit('chat-message', {
+    username: '🤖 Audex',
+    message,
+    type: 'text',
+    isBot: true,
+    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  });
+};
+
+const playNext = async (channelId) => {
+  const state = getAudexState(channelId);
+  if (state.queue.length === 0) {
+    state.playing = false;
+    state.current = null;
+    audexMessage(channelId, '✅ Queue finished! Use `!play <song>` to add more.');
+    io.to(`channel:${channelId}`).emit('audex-stopped');
+    return;
+  }
+
+  const next = state.queue.shift();
+  state.current = next;
+  state.playing = true;
+
+  try {
+    audexMessage(channelId, `▶ Now playing: **${next.title}** [${next.duration}]\nAdded by: ${next.addedBy}`);
+
+    const info = await ytdl.getInfo(next.url);
+    const format = ytdl.chooseFormat(info.formats, {
+      quality: 'highestaudio',
+      filter: 'audioonly'
+    });
+
+    if (!format) {
+      audexMessage(channelId, '❌ Could not get audio for this track. Skipping...');
+      playNext(channelId);
+      return;
+    }
+
+    const durationSecs = parseInt(info.videoDetails.lengthSeconds);
+
+    io.to(`channel:${channelId}`).emit('audex-stream-url', {
+      streamUrl: format.url,
+      title: next.title,
+      duration: durationSecs,
+      addedBy: next.addedBy,
+    });
+
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      playNext(channelId);
+    }, (durationSecs + 2) * 1000);
+
+  } catch (e) {
+    console.error('Audex playNext error:', e);
+    audexMessage(channelId, '❌ Error playing track. Skipping...');
+    playNext(channelId);
+  }
+};
+
 io.on('connection', (socket) => {
   console.log('Connected:', socket.id);
 
   // ── Create Server ─────────────────────────────────────────────
-  socket.on('create-server', ({ name, icon, username }) => {
+  socket.on('create-server', ({ name, icon, photo, username }) => {
     const id = generateCode();
     const defaultChannels = [
       { id: generateCode(), name: 'General', type: 'voice' },
@@ -45,13 +117,13 @@ io.on('connection', (socket) => {
 
     servers[id] = {
       id, name, icon,
+      photo: photo || null,
       ownerId: socket.id,
       ownerName: username,
       members: [{ id: socket.id, username, isAdmin: true }],
       channels: defaultChannels,
     };
 
-    // Init channel data
     defaultChannels.forEach(ch => {
       channels[ch.id] = { users: [], messages: [] };
     });
@@ -108,20 +180,17 @@ io.on('connection', (socket) => {
     io.to(`server:${serverId}`).emit('channel-deleted', channelId);
   });
 
-  // ── Join Channel (voice) ──────────────────────────────────────
+  // ── Join Channel ──────────────────────────────────────────────
   socket.on('join-channel', ({ channelId, serverId, username }) => {
     if (!channels[channelId]) return;
 
-    // Check if already in this channel
     const alreadyInChannel = channels[channelId].users.find(u => u.id === socket.id);
     if (alreadyInChannel) {
-      // Just resend existing users
       const existing = channels[channelId].users.filter(u => u.id !== socket.id);
       socket.emit('channel-existing-users', { users: existing, channelId });
       return;
     }
 
-    // Leave previous channel
     const prevChannel = Object.entries(channels).find(([id, ch]) =>
       id !== channelId && ch.users.find(u => u.id === socket.id)
     );
@@ -131,36 +200,36 @@ io.on('connection', (socket) => {
       socket.leave(`channel:${prevId}`);
       socket.to(`channel:${prevId}`).emit('user-left', socket.id);
       socket.to(`channel:${prevId}`).emit('user-left-channel', { userId: socket.id, channelId: prevId });
-
-      // Update server about old channel
-      Object.entries(servers).forEach(([serverId, srv]) => {
+      Object.entries(servers).forEach(([sId, srv]) => {
         if (srv.channels.find(c => c.id === prevId)) {
-          io.to(`server:${serverId}`).emit('channel-users-updated', {
-            channelId: prevId,
-            users: prevCh.users
-          });
+          io.to(`server:${sId}`).emit('channel-users-updated', { channelId: prevId, users: prevCh.users });
         }
       });
     }
 
-    // Join new channel
     channels[channelId].users.push({ id: socket.id, username });
     socket.join(`channel:${channelId}`);
+    socket.to(`channel:${channelId}`).emit('user-joined-channel', { id: socket.id, username, channelId });
 
-    // Tell others in channel
-    socket.to(`channel:${channelId}`).emit('user-joined-channel', {
-      id: socket.id, username, channelId
-    });
-
-    // Send existing users to new joiner
     const existing = channels[channelId].users.filter(u => u.id !== socket.id);
     socket.emit('channel-existing-users', { users: existing, channelId });
 
-    // Update channel user counts
     io.to(`server:${serverId}`).emit('channel-users-updated', {
       channelId,
       users: channels[channelId].users,
     });
+
+    // Send Audex state if active
+    if (audexActive[channelId]) {
+      socket.emit('audex-invited');
+      const state = getAudexState(channelId);
+      socket.emit('audex-state', {
+        active: true,
+        current: state.current,
+        queue: state.queue,
+        playing: state.playing,
+      });
+    }
 
     console.log(`${username} joined channel ${channelId}`);
   });
@@ -178,11 +247,25 @@ io.on('connection', (socket) => {
   });
 
   // ── Chat Message ──────────────────────────────────────────────
-  socket.on('chat-message', (channelId, message, username, type = 'text') => {
+ socket.on('chat-message', (channelId, message, username, type = 'text') => {
     io.to(`channel:${channelId}`).emit('chat-message', {
       username, message, type,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     });
+
+    // Detect !invite audex from chat
+    if (message.toLowerCase().trim() === '!invite audex') {
+      if (!audexActive[channelId]) {
+        audexActive[channelId] = true;
+        if (!audexQueues[channelId]) {
+          audexQueues[channelId] = { queue: [], playing: false, current: null, timer: null };
+        }
+        io.to(`channel:${channelId}`).emit('audex-invited');
+        setTimeout(() => {
+          audexMessage(channelId, '👋 Hey! I\'m **Audex**, your music bot!\nType !help to see what I can do 🎵');
+        }, 3500);
+      }
+    }
   });
 
   socket.on('chat-image', (channelId, imageData, username) => {
@@ -202,6 +285,173 @@ io.on('connection', (socket) => {
     socket.to(`channel:${channelId}`).emit('play-sound', { soundData, soundName });
   });
 
+  // ── Audex: Invite ─────────────────────────────────────────────
+  socket.on('audex-invite', ({ channelId }) => {
+    audexActive[channelId] = true;
+    if (!audexQueues[channelId]) {
+      audexQueues[channelId] = { queue: [], playing: false, current: null, timer: null };
+    }
+    io.to(`channel:${channelId}`).emit('audex-invited');
+    audexMessage(channelId, '👋 Hey! I\'m **Audex**, your music bot!\nType `!help` to see what I can do 🎵');
+  });
+
+  // ── Audex: Command ────────────────────────────────────────────
+  socket.on('audex-command', async ({ command, args, channelId, username }) => {
+    if (!audexActive[channelId]) return;
+    const state = getAudexState(channelId);
+    const cmd = command.toLowerCase();
+
+    // !invite audex
+    if (cmd === 'invite' && args?.toLowerCase() === 'audex') {
+      if (audexActive[channelId]) {
+        audexMessage(channelId, '🤖 Audex is already active in this channel!');
+        return;
+      }
+      audexActive[channelId] = true;
+      if (!audexQueues[channelId]) {
+        audexQueues[channelId] = { queue: [], playing: false, current: null, timer: null };
+      }
+      io.to(`channel:${channelId}`).emit('audex-invited');
+      setTimeout(() => {
+        audexMessage(channelId, '👋 Hey! I\'m **Audex**, your music bot!\nType !help to see what I can do 🎵');
+      }, 3000);
+      return;
+    }
+
+    if (cmd === 'help') {
+      audexMessage(channelId,
+        '🎵 Audex Commands:\n' +
+        '!play <song> — Play a song\n' +
+        '!skip — Skip current song\n' +
+        '!stop — Stop and clear queue\n' +
+        '!queue — Show song queue\n' +
+        '!np — Show now playing\n' +
+        '!help — Show this message'
+      );
+      return;
+    }
+
+    if (cmd === 'np') {
+      if (!state.current) {
+        audexMessage(channelId, '❌ Nothing is playing right now. Use !play <song> to start!');
+      } else {
+        audexMessage(channelId, `▶ Now playing: ${state.current.title}\nAdded by: ${state.current.addedBy}`);
+      }
+      return;
+    }
+
+    if (cmd === 'queue') {
+      if (state.queue.length === 0 && !state.current) {
+        audexMessage(channelId, '📭 Queue is empty. Use !play <song> to add songs!');
+      } else {
+        let msg = state.current ? `▶ Now playing: ${state.current.title}\n\n` : '';
+        if (state.queue.length > 0) {
+          msg += '📋 Up next:\n';
+          state.queue.slice(0, 10).forEach((s, i) => {
+            msg += `${i + 1}. ${s.title} — ${s.addedBy}\n`;
+          });
+          if (state.queue.length > 10) msg += `...and ${state.queue.length - 10} more`;
+        } else {
+          msg += '📭 No songs in queue.';
+        }
+        audexMessage(channelId, msg);
+      }
+      return;
+    }
+
+    if (cmd === 'skip') {
+      if (!state.current) {
+        audexMessage(channelId, '❌ Nothing to skip!');
+        return;
+      }
+      if (state.timer) clearTimeout(state.timer);
+      audexMessage(channelId, `⏭ Skipped: ${state.current.title}`);
+      io.to(`channel:${channelId}`).emit('audex-stopped');
+      playNext(channelId);
+      return;
+    }
+
+    if (cmd === 'stop') {
+      if (state.timer) clearTimeout(state.timer);
+      state.queue = [];
+      state.current = null;
+      state.playing = false;
+      audexMessage(channelId, '⏹ Stopped music and cleared the queue.');
+      io.to(`channel:${channelId}`).emit('audex-stopped');
+      return;
+    }
+
+    if (cmd === 'play') {
+      if (!args || !args.trim()) {
+        audexMessage(channelId, '❌ Please provide a song name! Example: !play lofi beats');
+        return;
+      }
+
+      audexMessage(channelId, `🔍 Searching for "${args}"...`);
+
+      try {
+        const results = await yts(args);
+        if (!results.videos.length) {
+          audexMessage(channelId, '❌ No results found. Try a different search!');
+          return;
+        }
+
+        const top = results.videos[0];
+        const song = {
+          title: top.title,
+          url: top.url,
+          duration: top.timestamp,
+          thumbnail: top.thumbnail,
+          addedBy: username,
+        };
+
+        state.queue.push(song);
+        audexMessage(channelId, `✅ Added to queue: ${top.title} [${top.timestamp}]`);
+
+        if (!state.playing) {
+          playNext(channelId);
+        }
+      } catch (e) {
+        audexMessage(channelId, '❌ Search failed. Please try again.');
+      }
+      return;
+    }
+
+    audexMessage(channelId, `❓ Unknown command: !${cmd}. Type !help for commands.`);
+  });
+
+  // ── Audex: Get State ──────────────────────────────────────────
+  socket.on('audex-get-state', ({ channelId }) => {
+    const state = getAudexState(channelId);
+    socket.emit('audex-state', {
+      active: audexActive[channelId] || false,
+      current: state.current,
+      queue: state.queue,
+      playing: state.playing,
+    });
+  });
+
+  // ── Audex: Stop from panel ────────────────────────────────────
+  socket.on('audex-stop', ({ channelId }) => {
+    const state = getAudexState(channelId);
+    if (state.timer) clearTimeout(state.timer);
+    state.queue = [];
+    state.current = null;
+    state.playing = false;
+    audexMessage(channelId, '⏹ Stopped by user.');
+    io.to(`channel:${channelId}`).emit('audex-stopped');
+  });
+
+  // ── Audex: Skip from panel ────────────────────────────────────
+  socket.on('audex-skip', ({ channelId, username }) => {
+    const state = getAudexState(channelId);
+    if (!state.current) return;
+    if (state.timer) clearTimeout(state.timer);
+    audexMessage(channelId, `⏭ ${username} skipped: ${state.current.title}`);
+    io.to(`channel:${channelId}`).emit('audex-stopped');
+    playNext(channelId);
+  });
+
   // ── WebRTC passthrough ────────────────────────────────────────
   socket.on('offer', (data) => socket.to(data.target).emit('offer', { ...data, from: socket.id }));
   socket.on('answer', (data) => socket.to(data.target).emit('answer', { ...data, from: socket.id }));
@@ -209,12 +459,10 @@ io.on('connection', (socket) => {
 
   // ── Disconnect ────────────────────────────────────────────────
   socket.on('disconnect', () => {
-    // Remove from all channels
     Object.entries(channels).forEach(([channelId, ch]) => {
       if (ch.users.find(u => u.id === socket.id)) {
         ch.users = ch.users.filter(u => u.id !== socket.id);
         socket.to(`channel:${channelId}`).emit('user-left', socket.id);
-        // Update server members of channel change
         Object.entries(servers).forEach(([serverId, srv]) => {
           if (srv.channels.find(c => c.id === channelId)) {
             io.to(`server:${serverId}`).emit('channel-users-updated', {
@@ -225,16 +473,13 @@ io.on('connection', (socket) => {
       }
     });
 
-    // Remove from servers
     Object.values(servers).forEach(srv => {
       srv.members = srv.members.filter(m => m.id !== socket.id);
       if (srv.members.length === 0) {
-        // Clean up empty server
         srv.channels.forEach(ch => delete channels[ch.id]);
         delete servers[srv.id];
         console.log(`Server ${srv.id} deleted (empty)`);
       } else if (srv.ownerId === socket.id) {
-        // Transfer ownership
         srv.ownerId = srv.members[0].id;
         srv.members[0].isAdmin = true;
         io.to(srv.members[0].id).emit('you-are-admin', srv.id);

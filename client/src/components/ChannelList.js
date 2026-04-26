@@ -14,6 +14,20 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const playSound = (freqStart, freqEnd) => {
+    try {
+      const ctx = new AudioContext();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.setValueAtTime(freqStart, ctx.currentTime);
+      o.frequency.setValueAtTime(freqEnd, ctx.currentTime + 0.1);
+      g.gain.setValueAtTime(0.3, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.4);
+    } catch (e) {}
+  };
+
   return (
     <div style={{ width: '240px', backgroundColor: theme.surface, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${theme.border}`, flexShrink: 0 }}>
 
@@ -64,7 +78,10 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
           return (
             <div key={ch.id}>
               <button
-                onClick={() => onJoinChannel(ch)}
+                onClick={() => {
+                  playSound(520, 660);
+                  onJoinChannel(ch);
+                }}
                 style={{
                   width: '100%', padding: '8px 10px', borderRadius: '8px', border: 'none',
                   backgroundColor: isActive ? theme.accent + '33' : 'transparent',

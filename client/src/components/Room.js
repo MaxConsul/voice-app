@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import Soundboard from './Soundboard';
+import Audex from './Audex';
 
 function Avatar({ profile, size = 40, speaking = false, muted = false, deafened = false }) {
   const ring = speaking && !muted ? '0 0 0 3px #2ecc71' : 'none';
@@ -51,6 +52,9 @@ function Room({ roomInfo, profile, socket, onLeave }) {
   const [soundboardOpen, setSoundboardOpen] = useState(false);
   const [imagePreview, setImagePreview] = useState(null);
   const [toast, setToast] = useState(null);
+  const [audexOpen, setAudexOpen] = useState(false);
+  const [audexActive, setAudexActive] = useState(false);
+  const [audexJoining, setAudexJoining] = useState(false);
 
   const peersRef = useRef({});
   const streamRef = useRef(null);
@@ -240,6 +244,14 @@ function Room({ roomInfo, profile, socket, onLeave }) {
         }
       };
 
+      socket.on('audex-invited', () => {
+        setAudexJoining(true);
+        setTimeout(() => {
+          setAudexJoining(false);
+          setAudexActive(true);
+        }, 3500);
+      });
+
       // Register listeners
       socket.on('channel-existing-users', handleExistingUsers);
       socket.on('user-joined-channel', handleUserJoined);
@@ -265,6 +277,9 @@ function Room({ roomInfo, profile, socket, onLeave }) {
         socket.off('user-status', handleUserStatus);
         socket.off('chat-message', handleChatMessage);
         socket.off('play-sound', handlePlaySound);
+
+        // Leave channel on unmount
+        socket.emit('leave-channel', { channelId, serverId });
 
         localStream?.getTracks().forEach(t => t.stop());
         Object.values(peersRef.current).forEach(pc => pc.close());
@@ -317,7 +332,21 @@ function Room({ roomInfo, profile, socket, onLeave }) {
 
   const sendMessage = () => {
     if (!messageInput.trim()) return;
-    socket.emit('chat-message', channelId, messageInput, username);
+    const msg = messageInput.trim();
+
+    // Check if it's an Audex command
+    if (msg.startsWith('!') && audexActive) {
+      const parts = msg.slice(1).split(' ');
+      const command = parts[0];
+      const args = parts.slice(1).join(' ');
+      socket.emit('audex-command', { command, args, channelId, username });
+      // Also show the command in chat so others see it
+      socket.emit('chat-message', channelId, msg, username);
+      setMessageInput('');
+      return;
+    }
+
+    socket.emit('chat-message', channelId, msg, username);
     setMessageInput('');
   };
 
@@ -341,6 +370,7 @@ function Room({ roomInfo, profile, socket, onLeave }) {
   const toggleChat = () => {
     setChatOpen(prev => !prev);
     setSoundboardOpen(false);
+    setAudexOpen(false);
     setUnread(0);
   };
 
@@ -444,6 +474,17 @@ function Room({ roomInfo, profile, socket, onLeave }) {
             🎵
           </button>
 
+          {/* Audex — only show if active */}
+          {audexActive && (
+            <button
+              onClick={() => { setAudexOpen(p => !p); setChatOpen(false); setSoundboardOpen(false); }}
+              title="Audex Music Bot"
+              style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: audexOpen ? theme.accent : theme.card, color: audexOpen ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+            >
+              🤖
+            </button>
+          )}
+
           <button onClick={leaveRoom} title="Leave Channel" style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: theme.danger, color: 'white', cursor: 'pointer', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             ✕
           </button>
@@ -466,14 +507,28 @@ function Room({ roomInfo, profile, socket, onLeave }) {
             )}
             {messages.map((msg, i) => {
               const isSelf = msg.username === username;
+              const isBot = msg.isBot;
               return (
-                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isSelf ? 'flex-end' : 'flex-start' }}>
-                  {!isSelf && <p style={{ color: theme.textSecondary, fontSize: '0.78rem', marginBottom: '4px', paddingLeft: '4px' }}>{msg.username}</p>}
+                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isBot ? 'flex-start' : isSelf ? 'flex-end' : 'flex-start' }}>
+                  {(!isSelf || isBot) && (
+                    <p style={{ color: isBot ? theme.accent : theme.textSecondary, fontSize: '0.78rem', marginBottom: '4px', paddingLeft: '4px', fontWeight: isBot ? '700' : '400' }}>
+                      {msg.username}
+                    </p>
+                  )}
                   {msg.type === 'image'
                     ? <img src={msg.message} alt="shared" style={{ maxWidth: '260px', borderRadius: '12px', cursor: 'pointer' }}
                         onClick={() => { const w = window.open(); w.document.write(`<img src="${msg.message}" style="max-width:100%;height:auto;" />`); }} />
-                    : <div style={{ backgroundColor: isSelf ? theme.accent : theme.surface, padding: '10px 14px', borderRadius: isSelf ? '14px 14px 4px 14px' : '14px 14px 14px 4px', maxWidth: '320px', border: `1px solid ${theme.border}` }}>
-                        <p style={{ color: isSelf ? 'white' : theme.text, wordBreak: 'break-word', fontSize: '0.95rem' }}>{msg.message}</p>
+                    : <div style={{
+                        backgroundColor: isBot ? theme.card : isSelf ? theme.accent : theme.surface,
+                        padding: '10px 14px',
+                        borderRadius: isBot ? '4px 14px 14px 14px' : isSelf ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                        maxWidth: '320px',
+                        border: isBot ? `1px solid ${theme.accent}44` : `1px solid ${theme.border}`,
+                        borderLeft: isBot ? `3px solid ${theme.accent}` : undefined,
+                      }}>
+                        <p style={{ color: isBot ? theme.text : isSelf ? 'white' : theme.text, wordBreak: 'break-word', fontSize: '0.9rem', whiteSpace: 'pre-line' }}>
+                          {msg.message}
+                        </p>
                       </div>
                   }
                   <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '3px', paddingLeft: '4px', paddingRight: '4px' }}>{msg.time}</p>
@@ -513,6 +568,84 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       {soundboardOpen && (
         <Soundboard socket={socket} roomId={channelId} username={username} />
       )}
+
+      {/* Audex Panel */}
+      {audexOpen && (
+        <Audex
+          socket={socket}
+          channelId={channelId}
+          username={username}
+          isActive={audexActive}
+          onInvite={() => {
+            socket.emit('audex-invite', { channelId });
+            setAudexActive(true);
+          }}
+        />
+      )}
+
+      {/* Audex Joining Animation */}
+      {audexJoining && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 5000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          backgroundColor: 'rgba(0,0,0,0.85)',
+          backdropFilter: 'blur(8px)',
+        }}>
+          <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+
+            {/* Animated bot icon */}
+            <div style={{
+              width: 100, height: 100, borderRadius: '28px',
+              backgroundColor: theme.accent,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '3rem',
+              boxShadow: `0 0 60px ${theme.accent}88`,
+              animation: 'audexPop 0.5s ease',
+            }}>
+              🤖
+            </div>
+
+            {/* Connecting dots */}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {[0, 1, 2, 3, 4].map(i => (
+                <div key={i} style={{
+                  width: i === 2 ? 10 : 7,
+                  height: i === 2 ? 10 : 7,
+                  borderRadius: '50%',
+                  backgroundColor: theme.accent,
+                  opacity: 0.3,
+                  animation: `audexDot 1s ${i * 0.15}s infinite`,
+                }} />
+              ))}
+            </div>
+
+            <div>
+              <p style={{ color: 'white', fontWeight: '800', fontSize: '1.3rem', marginBottom: '6px' }}>
+                Audex is joining...
+              </p>
+              <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.88rem' }}>
+                Setting up your music bot 🎵
+              </p>
+            </div>
+
+            {/* Progress bar */}
+            <div style={{ width: 220, height: 4, backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 2, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                backgroundColor: theme.accent,
+                borderRadius: 2,
+                animation: 'audexProgress 3.5s linear forwards',
+              }} />
+            </div>
+
+            <p style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.78rem' }}>
+              Powered by Audex v1.0
+            </p>
+          </div>
+        </div>
+      )}
+
+      
     </div>
   );
 }
