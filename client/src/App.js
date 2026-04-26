@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTheme } from './context/ThemeContext';
 import AvatarSetup from './components/AvatarSetup';
 import ServerList from './components/ServerList';
@@ -20,11 +20,18 @@ function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [error, setError] = useState('');
 
-  const handleAvatarDone = (profileData) => {
-    setProfile(profileData);
-    setScreen('main');
+  // Refs to avoid stale closures
+  const activeServerRef = useRef(null);
+  const activeChannelRef = useRef(null);
+  const isAdminRef = useRef(false);
 
-    // Listen for server events
+  // Keep refs in sync
+  useEffect(() => { activeServerRef.current = activeServer; }, [activeServer]);
+  useEffect(() => { activeChannelRef.current = activeChannel; }, [activeChannel]);
+  useEffect(() => { isAdminRef.current = isAdmin; }, [isAdmin]);
+
+  // Register socket listeners once on mount
+  useEffect(() => {
     socket.on('server-created', (srv) => {
       setServers(prev => [...prev, srv]);
       setActiveServer(srv);
@@ -42,33 +49,69 @@ function App() {
       setChannelUsers({});
     });
 
-    socket.on('server-error', (msg) => setError(msg));
+    socket.on('server-error', (msg) => {
+      setError(msg);
+      setTimeout(() => setError(''), 4000);
+    });
 
     socket.on('channel-created', (ch) => {
-      setActiveServer(prev => prev ? { ...prev, channels: [...prev.channels, ch] } : prev);
-      setServers(prev => prev.map(s => s.id === activeServer?.id ? { ...s, channels: [...s.channels, ch] } : s));
+      setActiveServer(prev => {
+        if (!prev) return prev;
+        return { ...prev, channels: [...prev.channels, ch] };
+      });
+      setServers(prev => prev.map(s =>
+        s.id === activeServerRef.current?.id
+          ? { ...s, channels: [...s.channels, ch] }
+          : s
+      ));
     });
 
     socket.on('channel-deleted', (channelId) => {
-      setActiveServer(prev => prev ? { ...prev, channels: prev.channels.filter(c => c.id !== channelId) } : prev);
-      if (activeChannel?.id === channelId) setActiveChannel(null);
+      setActiveServer(prev => {
+        if (!prev) return prev;
+        return { ...prev, channels: prev.channels.filter(c => c.id !== channelId) };
+      });
+      setActiveChannel(prev => prev?.id === channelId ? null : prev);
     });
 
     socket.on('channel-users-updated', ({ channelId, users }) => {
       setChannelUsers(prev => ({ ...prev, [channelId]: users }));
     });
 
-    socket.on('channel-existing-users', ({ users, channelId }) => {
-      setChannelUsers(prev => ({ ...prev, [channelId]: users }));
-    });
-
     socket.on('you-are-admin', (serverId) => {
-      if (activeServer?.id === serverId) setIsAdmin(true);
+      if (activeServerRef.current?.id === serverId) setIsAdmin(true);
     });
 
-    socket.on('member-joined', ({ username }) => {
-      setActiveServer(prev => prev ? { ...prev, memberCount: (prev.memberCount || 1) + 1 } : prev);
+    socket.on('member-joined', () => {
+      setActiveServer(prev => prev
+        ? { ...prev, memberCount: (prev.memberCount || 1) + 1 }
+        : prev
+      );
     });
+
+    socket.on('user-left-channel', ({ userId, channelId }) => {
+      setChannelUsers(prev => ({
+        ...prev,
+        [channelId]: (prev[channelId] || []).filter(u => u.id !== userId)
+      }));
+    });
+
+    return () => {
+      socket.off('server-created');
+      socket.off('server-joined');
+      socket.off('server-error');
+      socket.off('channel-created');
+      socket.off('channel-deleted');
+      socket.off('channel-users-updated');
+      socket.off('you-are-admin');
+      socket.off('member-joined');
+      socket.off('user-left-channel');
+    };
+  }, []);
+
+  const handleAvatarDone = (profileData) => {
+    setProfile(profileData);
+    setScreen('main');
   };
 
   const handleCreateServer = ({ name, icon }) => {
@@ -82,24 +125,36 @@ function App() {
   const handleSelectServer = (srv) => {
     setActiveServer(srv);
     setActiveChannel(null);
-    setIsAdmin(srv.ownerId === socket.id || srv.members?.find(m => m.id === socket.id)?.isAdmin);
+    const member = srv.members?.find(m => m.id === socket.id);
+    setIsAdmin(srv.ownerId === socket.id || member?.isAdmin || false);
   };
 
   const handleJoinChannel = (ch, newChannelName) => {
     if (newChannelName) {
-      // Create new channel
-      socket.emit('create-channel', { serverId: activeServer.id, name: newChannelName });
+      socket.emit('create-channel', {
+        serverId: activeServerRef.current.id,
+        name: newChannelName
+      });
       return;
     }
     if (!ch) return;
+
+    // Don't rejoin same channel
+    if (activeChannelRef.current?.id === ch.id) return;
+
+    // Leave current channel first
+    const current = activeChannelRef.current;
+    if (current) {
+      socket.emit('leave-channel', {
+        channelId: current.id,
+        serverId: activeServerRef.current?.id
+      });
+    }
+
     setActiveChannel(ch);
-    socket.emit('join-channel', { channelId: ch.id, serverId: activeServer.id, username: profile.username });
   };
 
   const handleLeaveChannel = () => {
-    if (activeChannel) {
-      socket.emit('leave-channel', { channelId: activeChannel.id, serverId: activeServer.id });
-    }
     setActiveChannel(null);
   };
 
@@ -143,6 +198,7 @@ function App() {
       ) : (
         <div style={{ width: '240px', backgroundColor: theme.surface, borderRight: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <div style={{ textAlign: 'center', padding: '20px' }}>
+            <p style={{ fontSize: '2rem', marginBottom: '8px' }}>👈</p>
             <p style={{ color: theme.textSecondary, fontSize: '0.88rem' }}>Create or join a server to get started</p>
           </div>
         </div>
@@ -151,6 +207,7 @@ function App() {
       {/* Right — Voice Room or Welcome */}
       {activeChannel ? (
         <Room
+          key={activeChannel.id}
           roomInfo={{ code: activeChannel.id, name: activeChannel.name, serverId: activeServer.id }}
           profile={profile}
           socket={socket}
@@ -159,6 +216,7 @@ function App() {
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: theme.bg }}>
           <div style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: '3rem', marginBottom: '12px' }}>🎙️</p>
             <h2 style={{ color: theme.text, fontWeight: '800', marginBottom: '8px' }}>
               {activeServer ? `Welcome to ${activeServer.name}!` : 'Welcome!'}
             </h2>

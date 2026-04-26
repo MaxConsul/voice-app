@@ -3,10 +3,7 @@ import { useTheme } from '../context/ThemeContext';
 import Soundboard from './Soundboard';
 
 function Avatar({ profile, size = 40, speaking = false, muted = false, deafened = false }) {
-  const ring = speaking && !muted
-    ? '0 0 0 3px #2ecc71'
-    : 'none';
-
+  const ring = speaking && !muted ? '0 0 0 3px #2ecc71' : 'none';
   return (
     <div style={{ position: 'relative', flexShrink: 0 }}>
       <div style={{
@@ -21,7 +18,6 @@ function Avatar({ profile, size = 40, speaking = false, muted = false, deafened 
       }}>
         {!profile.photo && profile.initials}
       </div>
-      {/* Status icon */}
       {(muted || deafened) && (
         <div style={{
           position: 'absolute', bottom: -2, right: -2,
@@ -39,48 +35,49 @@ function Avatar({ profile, size = 40, speaking = false, muted = false, deafened 
 
 function Room({ roomInfo, profile, socket, onLeave }) {
   const { theme, mode, toggleTheme } = useTheme();
-  const roomId = roomInfo?.code;
+  const channelId = roomInfo?.code;
+  const serverId = roomInfo?.serverId;
   const username = profile?.username;
 
   const [users, setUsers] = useState([]);
   const [muted, setMuted] = useState(false);
   const [deafened, setDeafened] = useState(false);
   const [speaking, setSpeaking] = useState(false);
-  const [isOwner, setIsOwner] = useState(false);
-  const [joinRequests, setJoinRequests] = useState([]);
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [messageInput, setMessageInput] = useState('');
   const [unread, setUnread] = useState(0);
-  const [copied, setCopied] = useState(false);
   const [userStatuses, setUserStatuses] = useState({});
   const [soundboardOpen, setSoundboardOpen] = useState(false);
-  const [ownerId, setOwnerId] = useState(null);
-  const [showTransferMenu, setShowTransferMenu] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [toast, setToast] = useState(null);
 
   const peersRef = useRef({});
   const streamRef = useRef(null);
   const audioRefs = useRef({});
   const chatBottomRef = useRef(null);
   const fileInputRef = useRef();
+  const deafenedRef = useRef(false);
 
-  const [imagePreview, setImagePreview] = useState(null);
-  const [toast, setToast] = useState(null);
-
-  // Sounds
-  const playSound = (freqStart, freqEnd) => {
-    const ctx = new AudioContext();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.frequency.setValueAtTime(freqStart, ctx.currentTime);
-    o.frequency.setValueAtTime(freqEnd, ctx.currentTime + 0.1);
-    g.gain.setValueAtTime(0.3, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-    o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.4);
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3500);
   };
 
-  // Speaking detection
+  const playSound = (freqStart, freqEnd) => {
+    try {
+      const ctx = new AudioContext();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.setValueAtTime(freqStart, ctx.currentTime);
+      o.frequency.setValueAtTime(freqEnd, ctx.currentTime + 0.1);
+      g.gain.setValueAtTime(0.3, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.4);
+    } catch (e) {}
+  };
+
   const startSpeakingDetection = (stream) => {
     const audioCtx = new AudioContext();
     const analyser = audioCtx.createAnalyser();
@@ -98,206 +95,229 @@ function Room({ roomInfo, profile, socket, onLeave }) {
   };
 
   useEffect(() => {
-    // Browser notifications permission
     if (Notification.permission === 'default') {
       Notification.requestPermission();
     }
 
+    let localStream = null;
+
     navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      localStream = stream;
       streamRef.current = stream;
       startSpeakingDetection(stream);
-      socket.emit('join-room', roomId, username);
 
-      socket.on('joined-success', ({ isOwner }) => setIsOwner(isOwner));
-      socket.on('you-are-owner', () => setIsOwner(true));
+      // ── Define WebRTC helpers inside effect so they close over stream ──
 
-      socket.on('owner-changed', (newOwnerId) => {
-        setOwnerId(newOwnerId);
-        setIsOwner(newOwnerId === socket.id);
-      });
-
-      socket.on('owner-transferred', () => {
-        setIsOwner(false);
-        setToast({ username: '🎖️ Ownership', message: 'You passed ownership', type: 'text' });
-        setTimeout(() => setToast(null), 3500);
-      });
-
-      socket.on('existing-users', (existingUsers) => {
-        setUsers(existingUsers);
-        existingUsers.forEach(user => createOffer(user.id, stream));
-      });
-
-      socket.on('user-joined', (user) => {
-        setUsers(prev => [...prev, user]);
-        playSound(520, 660);
-        if (document.hidden) {
-          new Notification('Warp', { body: `${user.username} joined the room` });
+      const _createPeerConnection = (targetId) => {
+        if (peersRef.current[targetId]) {
+          peersRef.current[targetId].close();
         }
-      });
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+          ]
+        });
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        pc.onicecandidate = (e) => {
+          if (e.candidate) socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
+        };
+        pc.ontrack = (e) => {
+          console.log('Got remote track from:', targetId);
+          const audio = new Audio();
+          audio.srcObject = e.streams[0];
+          audio.autoplay = true;
+          audio.muted = deafenedRef.current;
+          audioRefs.current[targetId] = audio;
+          audio.play().catch(err => console.warn('Audio play failed:', err));
+        };
+        pc.onconnectionstatechange = () => {
+          console.log(`Peer ${targetId}: ${pc.connectionState}`);
+        };
+        pc.onsignalingstatechange = () => {
+          console.log(`Peer ${targetId} signaling: ${pc.signalingState}`);
+        };
+        peersRef.current[targetId] = pc;
+        return pc;
+      };
 
-      socket.on('offer', async ({ from, offer }) => {
-        const pc = createPeerConnection(from, stream);
+      const _createOffer = async (targetId) => {
+        console.log('Creating offer to:', targetId);
+        const pc = _createPeerConnection(targetId);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('offer', { target: targetId, offer });
+      };
+
+      // ── Existing users when joining ──────────────────────────
+      const handleExistingUsers = ({ users: existingUsers, channelId: cId }) => {
+        if (cId !== channelId) return;
+        console.log('Existing users in channel:', existingUsers);
+        setUsers(existingUsers);
+        existingUsers.forEach(user => _createOffer(user.id));
+      };
+
+      // ── New user joined ──────────────────────────────────────
+      const handleUserJoined = (user) => {
+        if (user.channelId !== channelId) return;
+        console.log('New user joined channel:', user);
+        setUsers(prev => {
+          if (prev.find(u => u.id === user.id)) return prev;
+          return [...prev, user];
+        });
+        playSound(520, 660);
+      };
+
+      // ── WebRTC: Offer received ───────────────────────────────
+      const handleOffer = async ({ from, offer }) => {
+        console.log('Received offer from:', from);
+        const pc = _createPeerConnection(from);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('answer', { target: from, answer });
-      });
+      };
 
-      socket.on('answer', async ({ from, answer }) => {
+      // ── WebRTC: Answer received ──────────────────────────────
+      const handleAnswer = async ({ from, answer }) => {
+        console.log('Received answer from:', from);
         const pc = peersRef.current[from];
-        if (pc) await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      });
+        if (pc) {
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+          } catch (e) {
+            console.warn('Error setting remote description:', e);
+          }
+        }
+      };
 
-      socket.on('ice-candidate', ({ from, candidate }) => {
+      // ── WebRTC: ICE candidate ────────────────────────────────
+      const handleIce = ({ from, candidate }) => {
         const pc = peersRef.current[from];
-        if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate));
-      });
+        if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn('ICE error:', e));
+      };
 
-      socket.on('user-left', (id) => {
+      // ── User left ────────────────────────────────────────────
+      const handleUserLeft = (id) => {
+        console.log('User left:', id);
         if (peersRef.current[id]) {
           peersRef.current[id].close();
           delete peersRef.current[id];
         }
+        if (audioRefs.current[id]) {
+          audioRefs.current[id].pause();
+          delete audioRefs.current[id];
+        }
         setUsers(prev => prev.filter(u => u.id !== id));
         playSound(660, 520);
-      });
+      };
 
-      socket.on('join-request', ({ id, username: requester }) => {
-        setJoinRequests(prev => [...prev, { id, username: requester }]);
-        if (document.hidden) {
-          new Notification('Warp', { body: `${requester} wants to join` });
-        }
-      });
-
-      socket.on('room-dissolved', () => {
-        alert('This room was closed by an admin.');
-        onLeave();
-      });
-
-      socket.on('user-status', ({ id, muted, deafened }) => {
+      const handleUserStatus = ({ id, muted, deafened }) => {
         setUserStatuses(prev => ({ ...prev, [id]: { muted, deafened } }));
-      });
+      };
 
-      socket.on('chat-message', (msg) => {
+      const handleChatMessage = (msg) => {
         setMessages(prev => [...prev, msg]);
         if (msg.username !== username) {
-          if (!chatOpen) {
-            setUnread(u => u + 1);
-            // Show toast
-            setToast(msg);
-            setTimeout(() => setToast(null), 3500);
-          }
+          setChatOpen(prev => {
+            if (!prev) setUnread(u => u + 1);
+            return prev;
+          });
+          showToast(msg);
           if (document.hidden) {
-            new Notification(`${msg.username}`, { body: msg.type === 'image' ? '📷 Sent an image' : msg.message });
+            new Notification(`${msg.username}`, {
+              body: msg.type === 'image' ? '📷 Sent an image' : msg.message
+            });
           }
         }
-      });
+      };
 
-      socket.on('play-sound', ({ soundData, soundName }) => {
-        if (!deafened) {
+      const handlePlaySound = ({ soundData, soundName }) => {
+        if (!deafenedRef.current) {
           const audio = new Audio(soundData);
-          audio.play();
-          setToast({ username: '🔊 Soundboard', message: soundName, type: 'text' });
-          setTimeout(() => setToast(null), 3500);
+          audio.play().catch(() => {});
+          showToast({ username: '🔊 Soundboard', message: soundName, type: 'text' });
         }
-      });
+      };
 
+      // Register listeners
+      socket.on('channel-existing-users', handleExistingUsers);
+      socket.on('user-joined-channel', handleUserJoined);
+      socket.on('offer', handleOffer);
+      socket.on('answer', handleAnswer);
+      socket.on('ice-candidate', handleIce);
+      socket.on('user-left', handleUserLeft);
+      socket.on('user-status', handleUserStatus);
+      socket.on('chat-message', handleChatMessage);
+      socket.on('play-sound', handlePlaySound);
+
+      console.log('Room mounted, joining channel:', channelId);
+      socket.emit('join-channel', { channelId, serverId, username });
+
+      // Cleanup
+      return () => {
+        socket.off('channel-existing-users', handleExistingUsers);
+        socket.off('user-joined-channel', handleUserJoined);
+        socket.off('offer', handleOffer);
+        socket.off('answer', handleAnswer);
+        socket.off('ice-candidate', handleIce);
+        socket.off('user-left', handleUserLeft);
+        socket.off('user-status', handleUserStatus);
+        socket.off('chat-message', handleChatMessage);
+        socket.off('play-sound', handlePlaySound);
+
+        localStream?.getTracks().forEach(t => t.stop());
+        Object.values(peersRef.current).forEach(pc => pc.close());
+        peersRef.current = {};
+        audioRefs.current = {};
+      };
+    }).catch(err => {
+      console.error('Microphone error:', err);
     });
-
-    return () => socket.disconnect();
-  }, []);
+  }, [channelId]);
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const createPeerConnection = (targetId, stream) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-    stream.getTracks().forEach(track => pc.addTrack(track, stream));
-    pc.onicecandidate = (e) => {
-      if (e.candidate) socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
-    };
-    pc.ontrack = (e) => {
-      const audio = new Audio();
-      audio.srcObject = e.streams[0];
-      audioRefs.current[targetId] = audio;
-      if (!deafened) audio.play();
-    };
-    peersRef.current[targetId] = pc;
-    return pc;
-  };
-
-  const createOffer = async (targetId, stream) => {
-    const pc = createPeerConnection(targetId, stream);
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit('offer', { target: targetId, offer });
-  };
-
   const toggleMute = () => {
-    const track = streamRef.current.getAudioTracks()[0];
+    const track = streamRef.current?.getAudioTracks()[0];
+    if (!track) return;
     track.enabled = !track.enabled;
     setMuted(prev => {
-      socket.emit('user-status', roomId, { muted: !prev, deafened });
-      return !prev;
+      const newMuted = !prev;
+      socket.emit('user-status', channelId, { muted: newMuted, deafened: deafenedRef.current });
+      return newMuted;
     });
   };
 
   const toggleDeafen = () => {
     setDeafened(prev => {
       const newDeafened = !prev;
-      // Mute mic too when deafening
-      if (newDeafened) {
-        streamRef.current.getAudioTracks()[0].enabled = false;
-        setMuted(true);
-      } else {
-        streamRef.current.getAudioTracks()[0].enabled = true;
-        setMuted(false);
-      }
-      // Mute/unmute all incoming audio
-      Object.values(audioRefs.current).forEach(audio => {
-        audio.muted = newDeafened;
-      });
-      socket.emit('user-status', roomId, { muted: newDeafened, deafened: newDeafened });
+      deafenedRef.current = newDeafened;
+      const track = streamRef.current?.getAudioTracks()[0];
+      if (track) track.enabled = !newDeafened;
+      setMuted(newDeafened);
+      Object.values(audioRefs.current).forEach(audio => { audio.muted = newDeafened; });
+      socket.emit('user-status', channelId, { muted: newDeafened, deafened: newDeafened });
       return newDeafened;
     });
   };
 
   const leaveRoom = () => {
-    streamRef.current.getTracks().forEach(track => track.stop());
+    // Stop mic tracks
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    // Close peer connections
     Object.values(peersRef.current).forEach(pc => pc.close());
-    socket.disconnect();
+    peersRef.current = {};
+    // Tell server we left the channel
+    socket.emit('leave-channel', { channelId, serverId });
     onLeave();
-  };
-
-  const copyCode = () => {
-    navigator.clipboard.writeText(roomId);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const approveUser = (guestId, guestUsername) => {
-    socket.emit('approve-join', roomId, guestId, guestUsername);
-    setJoinRequests(prev => prev.filter(r => r.id !== guestId));
-  };
-
-  const rejectUser = (guestId) => {
-    socket.emit('reject-join', roomId, guestId);
-    setJoinRequests(prev => prev.filter(r => r.id !== guestId));
-  };
-
-  const transferOwnership = (targetId, targetUsername) => {
-    socket.emit('transfer-ownership', roomId, targetId);
-    setShowTransferMenu(null);
-    setToast({ username: '🎖️ Ownership Passed', message: `${targetUsername} is now the room owner`, type: 'text' });
-    setTimeout(() => setToast(null), 3500);
   };
 
   const sendMessage = () => {
     if (!messageInput.trim()) return;
-    socket.emit('chat-message', roomId, messageInput, username);
+    socket.emit('chat-message', channelId, messageInput, username);
     setMessageInput('');
   };
 
@@ -307,16 +327,14 @@ function Room({ roomInfo, profile, socket, onLeave }) {
     if (!file.type.startsWith('image/')) { alert('Please select an image file.'); return; }
     if (file.size > 2 * 1024 * 1024) { alert('Image must be under 2MB.'); return; }
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      setImagePreview(ev.target.result);
-    };
+    reader.onload = (ev) => setImagePreview(ev.target.result);
     reader.readAsDataURL(file);
     e.target.value = '';
   };
 
   const confirmSendImage = () => {
     if (!imagePreview) return;
-    socket.emit('chat-image', roomId, imagePreview, username);
+    socket.emit('chat-image', channelId, imagePreview, username);
     setImagePreview(null);
   };
 
@@ -329,76 +347,31 @@ function Room({ roomInfo, profile, socket, onLeave }) {
   return (
     <div style={{ display: 'flex', height: '100vh', backgroundColor: theme.bg }}>
 
-      {/* Join Request Popups */}
-      <div style={{ position: 'fixed', top: '20px', right: '20px', zIndex: 1000, display: 'flex', flexDirection: 'column', gap: '10px' }}>
-
-        {/* Toast notification */}
-        {toast && (
-          <div style={{
-            backgroundColor: theme.surface, border: `1px solid ${theme.border}`,
-            borderRadius: '14px', padding: '14px 18px', width: '280px',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
-            animation: 'slideIn 0.3s ease',
-            display: 'flex', alignItems: 'center', gap: '10px'
-          }}>
-            <div style={{ width: 36, height: 36, borderRadius: '50%', backgroundColor: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: '800', fontSize: '0.9rem', flexShrink: 0 }}>
-              {toast.username[0].toUpperCase()}
-            </div>
-            <div style={{ overflow: 'hidden' }}>
-              <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.85rem' }}>{toast.username}</p>
-              <p style={{ color: theme.textSecondary, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {toast.type === 'image' ? '📷 Sent an image' : toast.message}
-              </p>
-            </div>
+      {/* Toast */}
+      {toast && (
+        <div style={{ position: 'fixed', top: 20, right: 20, zIndex: 1000, backgroundColor: theme.surface, border: `1px solid ${theme.border}`, borderRadius: '14px', padding: '14px 18px', width: '280px', boxShadow: '0 8px 32px rgba(0,0,0,0.3)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{ width: 36, height: 36, borderRadius: '50%', backgroundColor: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: '800', fontSize: '0.9rem', flexShrink: 0 }}>
+            {toast.username[0].toUpperCase()}
           </div>
-        )}
-
-        {/* Join Request Popups */}
-        {joinRequests.map(req => (
-          <div key={req.id} style={{ backgroundColor: theme.surface, border: `1px solid ${theme.accent}`, borderRadius: '14px', padding: '18px 20px', width: '280px', boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-              <div style={{ width: 36, height: 36, borderRadius: '50%', backgroundColor: theme.accent, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: '800', fontSize: '0.9rem' }}>
-                {req.username[0].toUpperCase()}
-              </div>
-              <div>
-                <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.9rem' }}>{req.username}</p>
-                <p style={{ color: theme.textSecondary, fontSize: '0.78rem' }}>wants to join</p>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
-              <button onClick={() => approveUser(req.id, req.username)} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: 'none', backgroundColor: theme.success, color: 'white', fontWeight: '700', cursor: 'pointer' }}>
-                Accept
-              </button>
-              <button onClick={() => rejectUser(req.id)} style={{ flex: 1, padding: '8px', borderRadius: '8px', border: 'none', backgroundColor: theme.danger, color: 'white', fontWeight: '700', cursor: 'pointer' }}>
-                Reject
-              </button>
-            </div>
+          <div style={{ overflow: 'hidden' }}>
+            <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.85rem' }}>{toast.username}</p>
+            <p style={{ color: theme.textSecondary, fontSize: '0.8rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {toast.type === 'image' ? '📷 Sent an image' : toast.message}
+            </p>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
 
       {/* Voice Panel */}
-      <div style={{ width: '280px', backgroundColor: theme.surface, borderRight: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <div style={{ width: '260px', backgroundColor: theme.surface, borderRight: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
 
-        {/* Room Header */}
-        <div style={{ padding: '20px', borderBottom: `1px solid ${theme.border}` }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-            <h3 style={{ color: theme.text, fontWeight: '800', fontSize: '1rem' }}>
-              {roomInfo?.name || `Room ${roomId}`}
-            </h3>
-            {isOwner && (
-              <span style={{ backgroundColor: theme.warning + '33', color: theme.warning, fontSize: '0.7rem', fontWeight: '700', padding: '2px 8px', borderRadius: '20px' }}>
-                OWNER
-              </span>
-            )}
-          </div>
-
-          {/* Room Code + Copy */}
+        {/* Channel Header */}
+        <div style={{ padding: '16px 20px', borderBottom: `1px solid ${theme.border}` }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ color: theme.textSecondary, fontSize: '0.8rem', letterSpacing: '2px', fontWeight: '700' }}>{roomId}</span>
-            <button onClick={copyCode} style={{ padding: '3px 10px', borderRadius: '6px', border: 'none', backgroundColor: copied ? theme.success : theme.card, color: copied ? 'white' : theme.textSecondary, fontSize: '0.75rem', cursor: 'pointer', fontWeight: '600' }}>
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
+            <span style={{ color: theme.textSecondary, fontSize: '0.9rem' }}>🔊</span>
+            <h3 style={{ color: theme.text, fontWeight: '800', fontSize: '0.95rem' }}>
+              {roomInfo?.name || 'Channel'}
+            </h3>
           </div>
         </div>
 
@@ -409,124 +382,56 @@ function Room({ roomInfo, profile, socket, onLeave }) {
           </p>
 
           {/* You */}
-          <div style={{ flex: 1, overflow: 'hidden' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', marginBottom: '4px', backgroundColor: theme.card }}>
+            <Avatar profile={profile} size={34} speaking={speaking} muted={muted} deafened={deafened} />
+            <div style={{ flex: 1, overflow: 'hidden' }}>
+              <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.88rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {username} (you)
               </p>
-              {isOwner && (
-                <span style={{ fontSize: '0.7rem', backgroundColor: theme.warning + '33', color: theme.warning, padding: '1px 6px', borderRadius: '8px', fontWeight: '700', flexShrink: 0 }}>
-                  OWNER
-                </span>
-              )}
+              <p style={{ color: theme.textSecondary, fontSize: '0.74rem' }}>
+                {deafened ? 'Deafened' : muted ? 'Muted' : speaking ? 'Speaking...' : 'Connected'}
+              </p>
             </div>
-            <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>
-              {deafened ? 'Deafened' : muted ? 'Muted' : speaking ? 'Speaking...' : 'Connected'}
-            </p>
           </div>
 
           {/* Others */}
           {users.map(user => {
             const status = userStatuses[user.id] || {};
-            const isUserOwner = ownerId === user.id;
             return (
-              <div key={user.id}>
-                <div
-                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', marginBottom: '4px', cursor: isOwner ? 'pointer' : 'default', position: 'relative' }}
-                  onClick={() => isOwner && setShowTransferMenu(showTransferMenu === user.id ? null : user.id)}
-                >
-                  <Avatar
-                    profile={{ initials: user.username[0].toUpperCase(), color: '#3498db', photo: null }}
-                    size={36}
-                    muted={status.muted}
-                    deafened={status.deafened}
-                  />
-                  <div style={{ flex: 1, overflow: 'hidden' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <p style={{ color: theme.text, fontWeight: '600', fontSize: '0.9rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {user.username}
-                      </p>
-                      {isUserOwner && (
-                        <span style={{ fontSize: '0.7rem', backgroundColor: theme.warning + '33', color: theme.warning, padding: '1px 6px', borderRadius: '8px', fontWeight: '700', flexShrink: 0 }}>
-                          OWNER
-                        </span>
-                      )}
-                    </div>
-                    <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>
-                      {status.deafened ? 'Deafened' : status.muted ? 'Muted' : 'Connected'}
-                    </p>
-                  </div>
-                  {isOwner && (
-                    <span style={{ color: theme.textSecondary, fontSize: '0.7rem' }}>•••</span>
-                  )}
+              <div key={user.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '10px', marginBottom: '4px' }}>
+                <Avatar
+                  profile={{ initials: user.username[0].toUpperCase(), color: '#3498db', photo: null }}
+                  size={34}
+                  muted={status.muted}
+                  deafened={status.deafened}
+                />
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <p style={{ color: theme.text, fontWeight: '600', fontSize: '0.88rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {user.username}
+                  </p>
+                  <p style={{ color: theme.textSecondary, fontSize: '0.74rem' }}>
+                    {status.deafened ? 'Deafened' : status.muted ? 'Muted' : 'Connected'}
+                  </p>
                 </div>
-
-                {/* Transfer ownership menu */}
-                {showTransferMenu === user.id && isOwner && (
-                  <div style={{ backgroundColor: theme.card, border: `1px solid ${theme.border}`, borderRadius: '10px', padding: '6px', marginBottom: '6px', marginLeft: '46px' }}>
-                    <button
-                      onClick={() => transferOwnership(user.id, user.username)}
-                      style={{ width: '100%', padding: '8px 12px', borderRadius: '8px', border: 'none', backgroundColor: theme.warning + '22', color: theme.warning, cursor: 'pointer', fontWeight: '700', fontSize: '0.82rem', textAlign: 'left' }}
-                    >
-                      👑 Pass crown to {user.username}
-                    </button>
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
 
         {/* Controls */}
-        <div style={{ padding: '16px', borderTop: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Avatar profile={profile} size={34} />
-
+        <div style={{ padding: '12px 16px', borderTop: `1px solid ${theme.border}`, display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <Avatar profile={profile} size={32} />
           <div style={{ flex: 1 }} />
 
-          {/* Mute */}
-          <button
-            onClick={toggleMute}
-            title={muted ? 'Unmute' : 'Mute'}
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: '10px',
-              border: 'none',
-              backgroundColor: muted ? theme.danger : theme.card,
-              color: muted ? 'white' : theme.textSecondary,
-              cursor: 'pointer',
-              fontSize: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}
-          >
+          <button onClick={toggleMute} title={muted ? 'Unmute' : 'Mute'} style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: muted ? theme.danger : theme.card, color: muted ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {muted ? '🔇' : '🎤'}
           </button>
 
-          {/* Deafen */}
-          <button
-            onClick={toggleDeafen}
-            title={deafened ? 'Undeafen' : 'Deafen'}
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: '10px',
-              border: 'none',
-              backgroundColor: deafened ? theme.danger : theme.card,
-              color: deafened ? 'white' : theme.textSecondary,
-              cursor: 'pointer',
-              fontSize: '1rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}
-          >
+          <button onClick={toggleDeafen} title={deafened ? 'Undeafen' : 'Deafen'} style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: deafened ? theme.danger : theme.card, color: deafened ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             {deafened ? '🔕' : '🎧'}
           </button>
 
-          {/* Chat */}
-          <button onClick={toggleChat} title="Chat" style={{ width: 36, height: 36, borderRadius: '10px', border: 'none', backgroundColor: chatOpen ? theme.accent : theme.card, color: chatOpen ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '1rem', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button onClick={toggleChat} title="Chat" style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: chatOpen ? theme.accent : theme.card, color: chatOpen ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '0.95rem', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             💬
             {unread > 0 && (
               <span style={{ position: 'absolute', top: -4, right: -4, backgroundColor: theme.danger, color: 'white', borderRadius: '50%', width: 16, height: 16, fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800' }}>
@@ -535,17 +440,11 @@ function Room({ roomInfo, profile, socket, onLeave }) {
             )}
           </button>
 
-          {/* Soundboard */}
-          <button
-            onClick={() => { setSoundboardOpen(prev => !prev); setChatOpen(false); }}
-            title="Soundboard"
-            style={{ width: 36, height: 36, borderRadius: '10px', border: 'none', backgroundColor: soundboardOpen ? theme.accent : theme.card, color: soundboardOpen ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-          >
+          <button onClick={() => { setSoundboardOpen(p => !p); setChatOpen(false); }} title="Soundboard" style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: soundboardOpen ? theme.accent : theme.card, color: soundboardOpen ? 'white' : theme.textSecondary, cursor: 'pointer', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             🎵
           </button>
 
-          {/* Leave */}
-          <button onClick={leaveRoom} title="Leave" style={{ width: 36, height: 36, borderRadius: '10px', border: 'none', backgroundColor: theme.danger, color: 'white', cursor: 'pointer', fontSize: '1rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <button onClick={leaveRoom} title="Leave Channel" style={{ width: 34, height: 34, borderRadius: '10px', border: 'none', backgroundColor: theme.danger, color: 'white', cursor: 'pointer', fontSize: '0.95rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             ✕
           </button>
         </div>
@@ -554,8 +453,8 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       {/* Chat Panel */}
       {chatOpen && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: theme.bg }}>
-          <div style={{ padding: '20px 24px', borderBottom: `1px solid ${theme.border}`, backgroundColor: theme.surface }}>
-            <h3 style={{ color: theme.text, fontWeight: '800' }}>Chat</h3>
+          <div style={{ padding: '16px 24px', borderBottom: `1px solid ${theme.border}`, backgroundColor: theme.surface }}>
+            <h3 style={{ color: theme.text, fontWeight: '800' }}>💬 {roomInfo?.name}</h3>
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -571,20 +470,12 @@ function Room({ roomInfo, profile, socket, onLeave }) {
                 <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isSelf ? 'flex-end' : 'flex-start' }}>
                   {!isSelf && <p style={{ color: theme.textSecondary, fontSize: '0.78rem', marginBottom: '4px', paddingLeft: '4px' }}>{msg.username}</p>}
                   {msg.type === 'image'
-                    ? <img
-                        src={msg.message}
-                        alt="shared"
-                        style={{ maxWidth: '260px', borderRadius: '12px', cursor: 'pointer' }}
-                        onClick={() => {
-                          const win = window.open();
-                          win.document.write(`<img src="${msg.message}" style="max-width:100%;height:auto;" />`);
-                        }}
-                      />
-                    : (
-                      <div style={{ backgroundColor: isSelf ? theme.accent : theme.surface, padding: '10px 14px', borderRadius: isSelf ? '14px 14px 4px 14px' : '14px 14px 14px 4px', maxWidth: '320px', border: `1px solid ${theme.border}` }}>
+                    ? <img src={msg.message} alt="shared" style={{ maxWidth: '260px', borderRadius: '12px', cursor: 'pointer' }}
+                        onClick={() => { const w = window.open(); w.document.write(`<img src="${msg.message}" style="max-width:100%;height:auto;" />`); }} />
+                    : <div style={{ backgroundColor: isSelf ? theme.accent : theme.surface, padding: '10px 14px', borderRadius: isSelf ? '14px 14px 4px 14px' : '14px 14px 14px 4px', maxWidth: '320px', border: `1px solid ${theme.border}` }}>
                         <p style={{ color: isSelf ? 'white' : theme.text, wordBreak: 'break-word', fontSize: '0.95rem' }}>{msg.message}</p>
                       </div>
-                    )}
+                  }
                   <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '3px', paddingLeft: '4px', paddingRight: '4px' }}>{msg.time}</p>
                 </div>
               );
@@ -592,36 +483,19 @@ function Room({ roomInfo, profile, socket, onLeave }) {
             <div ref={chatBottomRef} />
           </div>
 
-          {/* Chat Input */}
           <div style={{ borderTop: `1px solid ${theme.border}`, backgroundColor: theme.surface }}>
-
-            {/* Image Preview */}
             {imagePreview && (
               <div style={{ padding: '12px 24px', borderBottom: `1px solid ${theme.border}`, display: 'flex', alignItems: 'flex-end', gap: '12px' }}>
                 <div style={{ position: 'relative', display: 'inline-block' }}>
                   <img src={imagePreview} alt="preview" style={{ maxHeight: '160px', maxWidth: '220px', borderRadius: '10px', display: 'block' }} />
-                  <button
-                    onClick={() => setImagePreview(null)}
-                    style={{ position: 'absolute', top: -8, right: -8, width: 22, height: 22, borderRadius: '50%', border: 'none', backgroundColor: theme.danger, color: 'white', cursor: 'pointer', fontSize: '0.7rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800' }}
-                  >
-                    ✕
-                  </button>
+                  <button onClick={() => setImagePreview(null)} style={{ position: 'absolute', top: -8, right: -8, width: 22, height: 22, borderRadius: '50%', border: 'none', backgroundColor: theme.danger, color: 'white', cursor: 'pointer', fontSize: '0.7rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '800' }}>✕</button>
                 </div>
-                <button
-                  onClick={confirmSendImage}
-                  style={{ padding: '10px 20px', borderRadius: '10px', border: 'none', backgroundColor: theme.accent, color: 'white', fontWeight: '700', cursor: 'pointer', fontSize: '0.9rem', flexShrink: 0 }}
-                >
-                  Send
-                </button>
+                <button onClick={confirmSendImage} style={{ padding: '10px 20px', borderRadius: '10px', border: 'none', backgroundColor: theme.accent, color: 'white', fontWeight: '700', cursor: 'pointer', fontSize: '0.9rem', flexShrink: 0 }}>Send</button>
               </div>
             )}
-
-            {/* Input Row */}
             <div style={{ padding: '16px 24px', display: 'flex', gap: '10px', alignItems: 'center' }}>
               <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={sendImage} />
-              <button onClick={() => fileInputRef.current.click()} style={{ width: 38, height: 38, borderRadius: '10px', border: 'none', backgroundColor: theme.card, color: theme.textSecondary, cursor: 'pointer', fontSize: '1.1rem', flexShrink: 0 }}>
-                🖼
-              </button>
+              <button onClick={() => fileInputRef.current.click()} style={{ width: 38, height: 38, borderRadius: '10px', border: 'none', backgroundColor: theme.card, color: theme.textSecondary, cursor: 'pointer', fontSize: '1.1rem', flexShrink: 0 }}>🖼</button>
               <input
                 style={{ flex: 1, padding: '10px 14px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: theme.input, color: theme.text, fontSize: '0.95rem', outline: 'none', fontFamily: 'inherit' }}
                 placeholder="Type a message..."
@@ -629,9 +503,7 @@ function Room({ roomInfo, profile, socket, onLeave }) {
                 onChange={e => setMessageInput(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && sendMessage()}
               />
-              <button onClick={sendMessage} style={{ width: 38, height: 38, borderRadius: '10px', border: 'none', backgroundColor: theme.accent, color: 'white', cursor: 'pointer', fontSize: '1rem', flexShrink: 0 }}>
-                ➤
-              </button>
+              <button onClick={sendMessage} style={{ width: 38, height: 38, borderRadius: '10px', border: 'none', backgroundColor: theme.accent, color: 'white', cursor: 'pointer', fontSize: '1rem', flexShrink: 0 }}>➤</button>
             </div>
           </div>
         </div>
@@ -639,16 +511,8 @@ function Room({ roomInfo, profile, socket, onLeave }) {
 
       {/* Soundboard Panel */}
       {soundboardOpen && (
-        <Soundboard socket={socket} roomId={roomId} username={username} />
+        <Soundboard socket={socket} roomId={channelId} username={username} />
       )}
-
-      {/* Theme toggle floating */}
-      <button
-        onClick={toggleTheme}
-        style={{ position: 'fixed', bottom: '80px', right: '20px', width: 40, height: 40, borderRadius: '50%', border: 'none', backgroundColor: theme.card, color: theme.text, cursor: 'pointer', fontSize: '1rem', boxShadow: '0 2px 12px rgba(0,0,0,0.2)' }}
-      >
-        {mode === 'dark' ? '☀️' : '🌙'}
-      </button>
     </div>
   );
 }

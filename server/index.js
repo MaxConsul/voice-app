@@ -112,17 +112,35 @@ io.on('connection', (socket) => {
   socket.on('join-channel', ({ channelId, serverId, username }) => {
     if (!channels[channelId]) return;
 
+    // Check if already in this channel
+    const alreadyInChannel = channels[channelId].users.find(u => u.id === socket.id);
+    if (alreadyInChannel) {
+      // Just resend existing users
+      const existing = channels[channelId].users.filter(u => u.id !== socket.id);
+      socket.emit('channel-existing-users', { users: existing, channelId });
+      return;
+    }
+
     // Leave previous channel
-    const prevChannel = Object.entries(channels).find(([, ch]) =>
-      ch.users.find(u => u.id === socket.id)
+    const prevChannel = Object.entries(channels).find(([id, ch]) =>
+      id !== channelId && ch.users.find(u => u.id === socket.id)
     );
     if (prevChannel) {
       const [prevId, prevCh] = prevChannel;
       prevCh.users = prevCh.users.filter(u => u.id !== socket.id);
       socket.leave(`channel:${prevId}`);
-      socket.to(`channel:${prevId}`).emit('user-left-channel', { userId: socket.id, channelId: prevId });
-      // WebRTC cleanup
       socket.to(`channel:${prevId}`).emit('user-left', socket.id);
+      socket.to(`channel:${prevId}`).emit('user-left-channel', { userId: socket.id, channelId: prevId });
+
+      // Update server about old channel
+      Object.entries(servers).forEach(([serverId, srv]) => {
+        if (srv.channels.find(c => c.id === prevId)) {
+          io.to(`server:${serverId}`).emit('channel-users-updated', {
+            channelId: prevId,
+            users: prevCh.users
+          });
+        }
+      });
     }
 
     // Join new channel
@@ -130,13 +148,15 @@ io.on('connection', (socket) => {
     socket.join(`channel:${channelId}`);
 
     // Tell others in channel
-    socket.to(`channel:${channelId}`).emit('user-joined-channel', { id: socket.id, username, channelId });
+    socket.to(`channel:${channelId}`).emit('user-joined-channel', {
+      id: socket.id, username, channelId
+    });
 
     // Send existing users to new joiner
     const existing = channels[channelId].users.filter(u => u.id !== socket.id);
     socket.emit('channel-existing-users', { users: existing, channelId });
 
-    // Update channel user counts for everyone in server
+    // Update channel user counts
     io.to(`server:${serverId}`).emit('channel-users-updated', {
       channelId,
       users: channels[channelId].users,
