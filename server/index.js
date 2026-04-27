@@ -395,6 +395,11 @@ io.on('connection', (socket) => {
         return;
       }
 
+      if (!yts || !ytdl) {
+        audexMessage(channelId, '⚠️ Audex music is not available on this server yet. The server needs a Node.js upgrade. Contact the admin!');
+        return;
+      }
+
       audexMessage(channelId, `🔍 Searching for "${args}"...`);
 
       try {
