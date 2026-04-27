@@ -63,7 +63,8 @@ const audexMessage = (channelId, message) => {
   });
 };
 
-const COOKIES_PATH = 'C:\\Users\\Administrator\\voice-app\\server\\cookies.txt';
+const path = require('path'); 
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
 const playNext = async (channelId) => {
   const state = getAudexState(channelId);
