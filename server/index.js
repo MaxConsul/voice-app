@@ -23,10 +23,7 @@ const audexQueues = {};
 const audexActive = {};
 
 // Audex config
-const COOKIES_PATH = process.platform === 'win32'
-  ? path.join(__dirname, 'cookies.txt')
-  : path.join(require('os').homedir(), 'cookies.txt');
-  
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 const YTDLP_PATH = process.platform === 'win32'
   ? path.join(__dirname, 'node_modules', 'yt-dlp-exec', 'bin', 'yt-dlp.exe')
   : '/usr/local/bin/yt-dlp';
