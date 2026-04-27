@@ -130,6 +130,7 @@ const playNext = async (channelId) => {
     console.log('Audio format found:', audioFormat.ext, audioFormat.abr);
 
     const durationSecs = parseInt(info.duration) || 0;
+    const proxyUrl = `http://localhost:5000/audex-proxy?url=${encodeURIComponent(audioFormat.url)}`;
     app.set('trust proxy', true);
 
     app.get('/your-route', (req, res) => {
