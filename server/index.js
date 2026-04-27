@@ -130,7 +130,7 @@ const playNext = async (channelId) => {
     console.log('Audio format found:', audioFormat.ext, audioFormat.abr);
 
     const durationSecs = parseInt(info.duration) || 0;
-    const proxyUrl = `http://localhost:5000/audex-proxy?url=${encodeURIComponent(audioFormat.url)}`;
+    const proxyUrl = `${window.location.origin}/audex-proxy?url=${encodeURIComponent(audioFormat.url)}`;
 
     io.to(`channel:${channelId}`).emit('audex-stream-url', {
       streamUrl: proxyUrl,
