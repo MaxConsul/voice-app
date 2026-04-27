@@ -21,3 +21,8 @@
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+echo "server/cookies.txt" >> voice-app/.gitignore
+git add .gitignore
+git commit -m "ignore cookies.txt"
+git push
