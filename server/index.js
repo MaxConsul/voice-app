@@ -1,13 +1,7 @@
-let ytdlp = null;
-let yts = null;
-try {
-  ytdlp = require('yt-dlp-exec');
-  yts = require('yt-search');
-  console.log('✅ Audex music bot ready');
-} catch (e) {
-  console.log('⚠️ Audex unavailable:', e.message);
-}
-
+const { execFile } = require('child_process');
+const util = require('util');
+const execFileAsync = util.promisify(execFile);
+const path = require('path');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -27,6 +21,20 @@ const servers = {};
 const channels = {};
 const audexQueues = {};
 const audexActive = {};
+
+// Audex config
+const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const YTDLP_PATH = process.platform === 'win32'
+  ? path.join(__dirname, 'node_modules', 'yt-dlp-exec', 'bin', 'yt-dlp.exe')
+  : '/usr/local/bin/yt-dlp';
+
+let yts = null;
+try {
+  yts = require('yt-search');
+  console.log('✅ Audex music bot ready');
+} catch (e) {
+  console.log('⚠️ Audex unavailable:', e.message);
+}
 
 // Helpers
 const generateCode = () => {
@@ -63,9 +71,6 @@ const audexMessage = (channelId, message) => {
   });
 };
 
-const path = require('path');
-const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
-
 const playNext = async (channelId) => {
   const state = getAudexState(channelId);
   if (state.queue.length === 0) {
@@ -83,15 +88,20 @@ const playNext = async (channelId) => {
   try {
     audexMessage(channelId, `▶ Now playing: ${next.title} [${next.duration}]\nAdded by: ${next.addedBy}`);
 
-    const info = await ytdlp(next.url, {
-      dumpSingleJson: true,
-      noWarnings: true,
-      noCheckCertificate: true,
-      cookies: COOKIES_PATH,
-      execPath: process.platform === 'win32'
-        ? undefined  // uses npm package binary on Windows
-        : '/usr/local/bin/yt-dlp'  // uses system binary on Linux
-    });
+    console.log('Using yt-dlp at:', YTDLP_PATH);
+    console.log('Cookies at:', COOKIES_PATH);
+    console.log('URL:', next.url);
+
+    const { stdout } = await execFileAsync(YTDLP_PATH, [
+      next.url,
+      '--dump-single-json',
+      '--no-warnings',
+      '--no-check-certificate',
+      '--cookies', COOKIES_PATH,
+    ], { maxBuffer: 10 * 1024 * 1024 });
+
+    const info = JSON.parse(stdout);
+    console.log('Got info, duration:', info.duration, 'formats:', info.formats.length);
 
     const audioFormat = info.formats
       .filter(f => f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none') && f.url)
@@ -103,8 +113,9 @@ const playNext = async (channelId) => {
       return;
     }
 
-    const durationSecs = parseInt(info.duration) || 0;
+    console.log('Audio format found:', audioFormat.ext, audioFormat.abr);
 
+    const durationSecs = parseInt(info.duration) || 0;
     const proxyUrl = `http://localhost:5000/audex-proxy?url=${encodeURIComponent(audioFormat.url)}`;
 
     io.to(`channel:${channelId}`).emit('audex-stream-url', {
@@ -134,7 +145,6 @@ io.on('connection', (socket) => {
     const defaultChannels = [
       { id: generateCode(), name: 'General', type: 'voice' },
     ];
-
     servers[id] = {
       id, name, icon,
       photo: photo || null,
@@ -143,11 +153,9 @@ io.on('connection', (socket) => {
       members: [{ id: socket.id, username, isAdmin: true }],
       channels: defaultChannels,
     };
-
     defaultChannels.forEach(ch => {
       channels[ch.id] = { users: [], messages: [] };
     });
-
     socket.join(`server:${id}`);
     socket.emit('server-created', getServerSummary(servers[id]));
     console.log(`${username} created server "${name}" (${id})`);
@@ -157,12 +165,10 @@ io.on('connection', (socket) => {
   socket.on('join-server', ({ serverId, username }) => {
     const srv = servers[serverId];
     if (!srv) { socket.emit('server-error', 'Server not found. Check the invite code.'); return; }
-
     const alreadyMember = srv.members.find(m => m.id === socket.id);
     if (!alreadyMember) {
       srv.members.push({ id: socket.id, username, isAdmin: false });
     }
-
     socket.join(`server:${serverId}`);
     socket.emit('server-joined', getServerSummary(srv));
     socket.to(`server:${serverId}`).emit('member-joined', { id: socket.id, username });
@@ -173,14 +179,11 @@ io.on('connection', (socket) => {
   socket.on('create-channel', ({ serverId, name }) => {
     const srv = servers[serverId];
     if (!srv) return;
-
     const member = srv.members.find(m => m.id === socket.id);
     if (!member?.isAdmin) { socket.emit('server-error', 'Only admins can create channels.'); return; }
-
     const ch = { id: generateCode(), name, type: 'voice' };
     srv.channels.push(ch);
     channels[ch.id] = { users: [], messages: [] };
-
     io.to(`server:${serverId}`).emit('channel-created', ch);
     console.log(`Channel "${name}" created in server ${serverId}`);
   });
@@ -189,28 +192,23 @@ io.on('connection', (socket) => {
   socket.on('delete-channel', ({ serverId, channelId }) => {
     const srv = servers[serverId];
     if (!srv) return;
-
     const member = srv.members.find(m => m.id === socket.id);
     if (!member?.isAdmin) { socket.emit('server-error', 'Only admins can delete channels.'); return; }
     if (srv.channels.length <= 1) { socket.emit('server-error', 'Server must have at least one channel.'); return; }
-
     srv.channels = srv.channels.filter(c => c.id !== channelId);
     delete channels[channelId];
-
     io.to(`server:${serverId}`).emit('channel-deleted', channelId);
   });
 
   // ── Join Channel ──────────────────────────────────────────────
   socket.on('join-channel', ({ channelId, serverId, username }) => {
     if (!channels[channelId]) return;
-
     const alreadyInChannel = channels[channelId].users.find(u => u.id === socket.id);
     if (alreadyInChannel) {
       const existing = channels[channelId].users.filter(u => u.id !== socket.id);
       socket.emit('channel-existing-users', { users: existing, channelId });
       return;
     }
-
     const prevChannel = Object.entries(channels).find(([id, ch]) =>
       id !== channelId && ch.users.find(u => u.id === socket.id)
     );
@@ -226,20 +224,14 @@ io.on('connection', (socket) => {
         }
       });
     }
-
     channels[channelId].users.push({ id: socket.id, username });
     socket.join(`channel:${channelId}`);
     socket.to(`channel:${channelId}`).emit('user-joined-channel', { id: socket.id, username, channelId });
-
     const existing = channels[channelId].users.filter(u => u.id !== socket.id);
     socket.emit('channel-existing-users', { users: existing, channelId });
-
     io.to(`server:${serverId}`).emit('channel-users-updated', {
-      channelId,
-      users: channels[channelId].users,
+      channelId, users: channels[channelId].users,
     });
-
-    // Send Audex state if active
     if (audexActive[channelId]) {
       socket.emit('audex-invited');
       const state = getAudexState(channelId);
@@ -250,7 +242,6 @@ io.on('connection', (socket) => {
         playing: state.playing,
       });
     }
-
     console.log(`${username} joined channel ${channelId}`);
   });
 
@@ -261,19 +252,16 @@ io.on('connection', (socket) => {
     socket.leave(`channel:${channelId}`);
     socket.to(`channel:${channelId}`).emit('user-left', socket.id);
     io.to(`server:${serverId}`).emit('channel-users-updated', {
-      channelId,
-      users: channels[channelId].users,
+      channelId, users: channels[channelId].users,
     });
   });
 
   // ── Chat Message ──────────────────────────────────────────────
- socket.on('chat-message', (channelId, message, username, type = 'text') => {
+  socket.on('chat-message', (channelId, message, username, type = 'text') => {
     io.to(`channel:${channelId}`).emit('chat-message', {
       username, message, type,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     });
-
-    // Detect !invite audex from chat
     if (message.toLowerCase().trim() === '!invite audex') {
       if (!audexActive[channelId]) {
         audexActive[channelId] = true;
@@ -282,7 +270,7 @@ io.on('connection', (socket) => {
         }
         io.to(`channel:${channelId}`).emit('audex-invited');
         setTimeout(() => {
-          audexMessage(channelId, '👋 Hey! I\'m **Audex**, your music bot!\nType !help to see what I can do 🎵');
+          audexMessage(channelId, '👋 Hey! I\'m Audex, your music bot!\nType !help to see what I can do 🎵');
         }, 3500);
       }
     }
@@ -312,7 +300,7 @@ io.on('connection', (socket) => {
       audexQueues[channelId] = { queue: [], playing: false, current: null, timer: null };
     }
     io.to(`channel:${channelId}`).emit('audex-invited');
-    audexMessage(channelId, '👋 Hey! I\'m **Audex**, your music bot!\nType `!help` to see what I can do 🎵');
+    audexMessage(channelId, '👋 Hey! I\'m Audex, your music bot!\nType !help to see what I can do 🎵');
   });
 
   // ── Audex: Command ────────────────────────────────────────────
@@ -321,7 +309,6 @@ io.on('connection', (socket) => {
     const state = getAudexState(channelId);
     const cmd = command.toLowerCase();
 
-    // !invite audex
     if (cmd === 'invite' && args?.toLowerCase() === 'audex') {
       if (audexActive[channelId]) {
         audexMessage(channelId, '🤖 Audex is already active in this channel!');
@@ -333,7 +320,7 @@ io.on('connection', (socket) => {
       }
       io.to(`channel:${channelId}`).emit('audex-invited');
       setTimeout(() => {
-        audexMessage(channelId, '👋 Hey! I\'m **Audex**, your music bot!\nType !help to see what I can do 🎵');
+        audexMessage(channelId, '👋 Hey! I\'m Audex, your music bot!\nType !help to see what I can do 🎵');
       }, 3000);
       return;
     }
@@ -406,21 +393,17 @@ io.on('connection', (socket) => {
         audexMessage(channelId, '❌ Please provide a song name! Example: !play lofi beats');
         return;
       }
-
-      if (!yts || !ytdlp) {
+      if (!yts) {
         audexMessage(channelId, '⚠️ Audex music is not available on this server yet.');
         return;
       }
-
       audexMessage(channelId, `🔍 Searching for "${args}"...`);
-
       try {
         const results = await yts(args);
         if (!results.videos.length) {
           audexMessage(channelId, '❌ No results found. Try a different search!');
           return;
         }
-
         const top = results.videos[0];
         const song = {
           title: top.title,
@@ -429,10 +412,8 @@ io.on('connection', (socket) => {
           thumbnail: top.thumbnail,
           addedBy: username,
         };
-
         state.queue.push(song);
         audexMessage(channelId, `✅ Added to queue: ${top.title} [${top.timestamp}]`);
-
         if (!state.playing) {
           playNext(channelId);
         }
@@ -497,7 +478,6 @@ io.on('connection', (socket) => {
         });
       }
     });
-
     Object.values(servers).forEach(srv => {
       srv.members = srv.members.filter(m => m.id !== socket.id);
       if (srv.members.length === 0) {
@@ -511,7 +491,6 @@ io.on('connection', (socket) => {
         io.to(`server:${srv.id}`).emit('owner-changed', srv.members[0].id);
       }
     });
-
     console.log('Disconnected:', socket.id);
   });
 });
@@ -520,11 +499,9 @@ io.on('connection', (socket) => {
 app.get('/audex-proxy', async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).send('No URL');
-
   try {
     const https = require('https');
     const urlObj = new URL(url);
-
     const options = {
       hostname: urlObj.hostname,
       path: urlObj.pathname + urlObj.search,
@@ -535,26 +512,19 @@ app.get('/audex-proxy', async (req, res) => {
         'Range': req.headers.range || 'bytes=0-',
       }
     };
-
     const proxyReq = https.request(options, (proxyRes) => {
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'audio/webm');
       res.setHeader('Accept-Ranges', 'bytes');
-      if (proxyRes.headers['content-range']) {
-        res.setHeader('Content-Range', proxyRes.headers['content-range']);
-      }
-      if (proxyRes.headers['content-length']) {
-        res.setHeader('Content-Length', proxyRes.headers['content-length']);
-      }
+      if (proxyRes.headers['content-range']) res.setHeader('Content-Range', proxyRes.headers['content-range']);
+      if (proxyRes.headers['content-length']) res.setHeader('Content-Length', proxyRes.headers['content-length']);
       res.status(proxyRes.statusCode);
       proxyRes.pipe(res);
     });
-
     proxyReq.on('error', (e) => {
       console.error('Proxy error:', e.message);
       res.status(500).send('Proxy error');
     });
-
     proxyReq.end();
   } catch (e) {
     console.error('Proxy error:', e.message);
