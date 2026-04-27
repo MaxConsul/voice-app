@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { PROXY_URL } from '../config';
 
 function Audex({ socket, channelId, username, isActive, onInvite }) {
   const { theme } = useTheme();
@@ -14,7 +15,7 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
   const [streamError, setStreamError] = useState('');
   const audioRef = useRef(null);
   const timerRef = useRef(null);
-  
+
   useEffect(() => {
     // Get current state when panel opens
     socket.emit('audex-get-state', { channelId });

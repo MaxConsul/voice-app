@@ -26,3 +26,6 @@ echo "server/cookies.txt" >> voice-app/.gitignore
 git add .gitignore
 git commit -m "ignore cookies.txt"
 git push
+
+.env.local
+.env.production
