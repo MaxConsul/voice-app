@@ -98,14 +98,28 @@ const playNext = async (channelId) => {
       '--no-warnings',
       '--no-check-certificate',
       '--cookies', COOKIES_PATH,
+      '--js-runtimes', 'node',
     ], { maxBuffer: 10 * 1024 * 1024 });
 
     const info = JSON.parse(stdout);
     console.log('Got info, duration:', info.duration, 'formats:', info.formats.length);
 
-    const audioFormat = info.formats
+    // Try audio-only first, then fall back to any format with audio
+    let audioFormat = info.formats
       .filter(f => f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none') && f.url)
       .sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
+
+    // Fallback: any format with audio and a URL
+    if (!audioFormat) {
+      audioFormat = info.formats
+        .filter(f => f.acodec && f.acodec !== 'none' && f.url)
+        .sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
+    }
+
+    // Last resort: just get any format with a URL
+    if (!audioFormat) {
+      audioFormat = info.formats.find(f => f.url);
+    }
 
     if (!audioFormat) {
       audexMessage(channelId, '❌ Could not get audio for this track. Skipping...');
