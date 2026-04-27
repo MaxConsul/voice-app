@@ -63,7 +63,7 @@ const audexMessage = (channelId, message) => {
   });
 };
 
-const path = require('path'); 
+const path = require('path');
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
 
 const playNext = async (channelId) => {
@@ -88,6 +88,9 @@ const playNext = async (channelId) => {
       noWarnings: true,
       noCheckCertificate: true,
       cookies: COOKIES_PATH,
+      execPath: process.platform === 'win32'
+        ? undefined  // uses npm package binary on Windows
+        : '/usr/local/bin/yt-dlp'  // uses system binary on Linux
     });
 
     const audioFormat = info.formats
