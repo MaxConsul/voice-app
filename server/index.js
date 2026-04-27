@@ -1,5 +1,13 @@
-const ytdl = require('ytdl-core');
-const yts = require('yt-search');
+let ytdl = null;
+let yts = null;
+try {
+  ytdl = require('ytdl-core');
+  yts = require('yt-search');
+  console.log('✅ Audex music bot ready');
+} catch (e) {
+  console.log('⚠️ Audex unavailable — ytdl-core failed to load');
+}
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
