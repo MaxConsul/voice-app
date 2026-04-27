@@ -8,9 +8,13 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
   const [duration, setDuration] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
+  const [query, setQuery] = useState('');
+  const [view, setView] = useState('search'); 
+  const [buffering, setBuffering] = useState(false);
+  const [streamError, setStreamError] = useState('');
   const audioRef = useRef(null);
   const timerRef = useRef(null);
-
+  
   useEffect(() => {
     // Get current state when panel opens
     socket.emit('audex-get-state', { channelId });
@@ -25,22 +29,42 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
         audioRef.current.pause();
         clearInterval(timerRef.current);
       }
-      const audio = new Audio(streamUrl);
-      audio.crossOrigin = 'anonymous';
-      audioRef.current = audio;
-      audio.play().catch(() => {});
+
+      setBuffering(true);
       setNowPlaying({ title, duration, addedBy });
       setDuration(parseInt(duration));
       setElapsed(0);
+      setView('search');
+      setQuery('');
+
+      const audio = new Audio(streamUrl);
+      audio.crossOrigin = 'anonymous';
+      audioRef.current = audio;
+
+      // Loading events
+      audio.onwaiting = () => setBuffering(true);
+      audio.onplaying = () => setBuffering(false);
+      audio.oncanplay = () => setBuffering(false);
+
+      audio.onerror = () => {
+        setBuffering(false);
+        setStreamError('Failed to load audio. Try skipping to next song.');
+        setTimeout(() => setStreamError(''), 5000);
+      };
+
+      audio.play().catch(() => {
+        setBuffering(false);
+        setStreamError('Playback blocked. Click anywhere and try again.');
+        setTimeout(() => setStreamError(''), 5000);
+      });
 
       timerRef.current = setInterval(() => {
-        setElapsed(prev => {
-          if (prev >= parseInt(duration)) {
-            clearInterval(timerRef.current);
-            return prev;
-          }
-          return prev + 1;
-        });
+        if (!audio.paused) {
+          setElapsed(Math.floor(audio.currentTime));
+        }
+        if (audio.ended) {
+          clearInterval(timerRef.current);
+        }
       }, 1000);
     });
 
@@ -84,6 +108,9 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
     if (!searchQuery.trim()) return;
     sendCommand(`!play ${searchQuery.trim()}`);
     setSearchQuery('');
+    setBuffering(true);
+    // Reset buffering if nothing comes back in 15 seconds
+    setTimeout(() => setBuffering(false), 15000);
   };
 
   const fmt = (s) => {
@@ -154,8 +181,30 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
 
         {/* Now Playing */}
         {nowPlaying ? (
-          <div style={{ backgroundColor: theme.surface, border: `1px solid ${theme.accent}`, borderRadius: '14px', padding: '16px', boxShadow: `0 0 20px ${theme.accent}22` }}>
-            <p style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>Now Playing</p>
+          <div style={{ backgroundColor: theme.surface, border: `1px solid ${buffering ? theme.warning : theme.accent}`, borderRadius: '14px', padding: '16px', boxShadow: `0 0 20px ${theme.accent}22`, transition: 'border-color 0.3s ease' }}>
+
+            {/* Stream error */}
+            {streamError && (
+              <div style={{ backgroundColor: theme.danger + '22', border: `1px solid ${theme.danger}`, borderRadius: '8px', padding: '8px 12px', marginBottom: '12px' }}>
+                <p style={{ color: theme.danger, fontSize: '0.82rem' }}>❌ {streamError}</p>
+              </div>
+            )}
+
+            {/* Buffering indicator */}
+            {buffering && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', backgroundColor: theme.warning + '22', borderRadius: '8px', padding: '8px 12px' }}>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  {[0, 1, 2].map(i => (
+                    <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: theme.warning, animation: `audexDot 0.8s ${i * 0.2}s infinite` }} />
+                  ))}
+                </div>
+                <p style={{ color: theme.warning, fontSize: '0.82rem', fontWeight: '600' }}>Buffering...</p>
+              </div>
+            )}
+
+            <p style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
+              {buffering ? 'Loading...' : 'Now Playing'}
+            </p>
             <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.92rem', marginBottom: '4px' }}>{nowPlaying.title}</p>
             <p style={{ color: theme.textSecondary, fontSize: '0.75rem', marginBottom: '12px' }}>Added by {nowPlaying.addedBy}</p>
 

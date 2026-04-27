@@ -1,11 +1,11 @@
-let ytdl = null;
+let ytdlp = null;
 let yts = null;
 try {
-  ytdl = require('ytdl-core');
+  ytdlp = require('yt-dlp-exec');
   yts = require('yt-search');
   console.log('✅ Audex music bot ready');
 } catch (e) {
-  console.log('⚠️ Audex unavailable — ytdl-core failed to load');
+  console.log('⚠️ Audex unavailable:', e.message);
 }
 
 const express = require('express');
@@ -63,12 +63,14 @@ const audexMessage = (channelId, message) => {
   });
 };
 
+const COOKIES_PATH = 'C:\\Users\\Administrator\\voice-app\\server\\cookies.txt';
+
 const playNext = async (channelId) => {
   const state = getAudexState(channelId);
   if (state.queue.length === 0) {
     state.playing = false;
     state.current = null;
-    audexMessage(channelId, '✅ Queue finished! Use `!play <song>` to add more.');
+    audexMessage(channelId, '✅ Queue finished! Use !play <song> to add more.');
     io.to(`channel:${channelId}`).emit('audex-stopped');
     return;
   }
@@ -78,24 +80,31 @@ const playNext = async (channelId) => {
   state.playing = true;
 
   try {
-    audexMessage(channelId, `▶ Now playing: **${next.title}** [${next.duration}]\nAdded by: ${next.addedBy}`);
+    audexMessage(channelId, `▶ Now playing: ${next.title} [${next.duration}]\nAdded by: ${next.addedBy}`);
 
-    const info = await ytdl.getInfo(next.url);
-    const format = ytdl.chooseFormat(info.formats, {
-      quality: 'highestaudio',
-      filter: 'audioonly'
+    const info = await ytdlp(next.url, {
+      dumpSingleJson: true,
+      noWarnings: true,
+      noCheckCertificate: true,
+      cookies: COOKIES_PATH,
     });
 
-    if (!format) {
+    const audioFormat = info.formats
+      .filter(f => f.acodec && f.acodec !== 'none' && (!f.vcodec || f.vcodec === 'none') && f.url)
+      .sort((a, b) => (b.abr || 0) - (a.abr || 0))[0];
+
+    if (!audioFormat) {
       audexMessage(channelId, '❌ Could not get audio for this track. Skipping...');
       playNext(channelId);
       return;
     }
 
-    const durationSecs = parseInt(info.videoDetails.lengthSeconds);
+    const durationSecs = parseInt(info.duration) || 0;
+
+    const proxyUrl = `http://localhost:5000/audex-proxy?url=${encodeURIComponent(audioFormat.url)}`;
 
     io.to(`channel:${channelId}`).emit('audex-stream-url', {
-      streamUrl: format.url,
+      streamUrl: proxyUrl,
       title: next.title,
       duration: durationSecs,
       addedBy: next.addedBy,
@@ -107,9 +116,8 @@ const playNext = async (channelId) => {
     }, (durationSecs + 2) * 1000);
 
   } catch (e) {
-    console.error('Audex playNext error:', e);
+    console.error('Audex playNext error:', e.message);
     audexMessage(channelId, '❌ Error playing track. Skipping...');
-    playNext(channelId);
   }
 };
 
@@ -395,8 +403,8 @@ io.on('connection', (socket) => {
         return;
       }
 
-      if (!yts || !ytdl) {
-        audexMessage(channelId, '⚠️ Audex music is not available on this server yet. The server needs a Node.js upgrade. Contact the admin!');
+      if (!yts || !ytdlp) {
+        audexMessage(channelId, '⚠️ Audex music is not available on this server yet.');
         return;
       }
 
@@ -502,6 +510,52 @@ io.on('connection', (socket) => {
 
     console.log('Disconnected:', socket.id);
   });
+});
+
+// Audex audio proxy
+app.get('/audex-proxy', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).send('No URL');
+
+  try {
+    const https = require('https');
+    const urlObj = new URL(url);
+
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.youtube.com',
+        'Origin': 'https://www.youtube.com',
+        'Range': req.headers.range || 'bytes=0-',
+      }
+    };
+
+    const proxyReq = https.request(options, (proxyRes) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', proxyRes.headers['content-type'] || 'audio/webm');
+      res.setHeader('Accept-Ranges', 'bytes');
+      if (proxyRes.headers['content-range']) {
+        res.setHeader('Content-Range', proxyRes.headers['content-range']);
+      }
+      if (proxyRes.headers['content-length']) {
+        res.setHeader('Content-Length', proxyRes.headers['content-length']);
+      }
+      res.status(proxyRes.statusCode);
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('error', (e) => {
+      console.error('Proxy error:', e.message);
+      res.status(500).send('Proxy error');
+    });
+
+    proxyReq.end();
+  } catch (e) {
+    console.error('Proxy error:', e.message);
+    res.status(500).send('Error');
+  }
 });
 
 server.listen(5000, () => console.log('Server running on port 5000'));
