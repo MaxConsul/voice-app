@@ -122,7 +122,15 @@ function Room({ roomInfo, profile, socket, onLeave }) {
             { urls: 'stun:stun1.l.google.com:19302' },
           ]
         });
-        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        
+        // Make sure we add audio tracks properly
+        const audioTracks = stream.getAudioTracks();
+        console.log('Adding tracks to peer:', targetId, 'tracks:', audioTracks.length);
+        stream.getTracks().forEach(track => {
+          const sender = pc.addTrack(track, stream);
+          console.log('Added track:', track.kind, track.enabled, track.readyState);
+        });
+
         pc.onicecandidate = (e) => {
           if (e.candidate) socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
         };
@@ -268,8 +276,18 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       socket.on('chat-message', handleChatMessage);
       socket.on('play-sound', handlePlaySound);
 
-      console.log('Room mounted, joining channel:', channelId);
-      socket.emit('join-channel', { channelId, serverId, username });
+      // Wait for stream to be fully active before joining
+      const tracks = stream.getAudioTracks();
+      if (tracks.length > 0) {
+        tracks[0].enabled = true;
+      }
+
+      // Small delay to ensure stream is ready
+      setTimeout(() => {
+        console.log('Room mounted, joining channel:', channelId);
+        console.log('Audio tracks:', stream.getAudioTracks().map(t => `${t.label} enabled:${t.enabled} readyState:${t.readyState}`));
+        socket.emit('join-channel', { channelId, serverId, username });
+      }, 500);
 
       // Cleanup
       return () => {
