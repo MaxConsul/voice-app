@@ -154,9 +154,10 @@ io.on('connection', (socket) => {
   console.log('Connected:', socket.id);
 
   // ── Create Server ─────────────────────────────────────────────
-  socket.on('create-server', ({ name, icon, photo, username }) => {
+   socket.on('create-server', ({ name, icon, photo, username }) => {
     const id = generateCode();
     const defaultChannels = [
+      { id: generateCode(), name: 'general', type: 'text' },
       { id: generateCode(), name: 'General', type: 'voice' },
     ];
     servers[id] = {
@@ -288,6 +289,26 @@ io.on('connection', (socket) => {
         }, 3500);
       }
     }
+  });
+
+  socket.on('get-text-messages', ({ channelId }) => {
+    const ch = channels[channelId];
+    if (!ch) return;
+    socket.emit('text-messages', { channelId, messages: ch.messages || [] });
+  });
+
+  socket.on('text-message', ({ channelId, message, username, serverId }) => {
+    const ch = channels[channelId];
+    if (!ch) return;
+    const msg = {
+      username, message,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    };
+    if (!ch.messages) ch.messages = [];
+    ch.messages.push(msg);
+    // Keep only last 100 messages
+    if (ch.messages.length > 100) ch.messages.shift();
+    io.to(`server:${serverId}`).emit('text-message', { channelId, ...msg });
   });
 
   socket.on('chat-image', (channelId, imageData, username) => {

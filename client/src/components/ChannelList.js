@@ -5,8 +5,8 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
   const { theme } = useTheme();
   const [showCreate, setShowCreate] = useState(false);
   const [channelName, setChannelName] = useState('');
+  const [channelType, setChannelType] = useState('voice');
   const [copied, setCopied] = useState(false);
-  const [socket, setSocket] = useState(null);
 
   const copyInvite = () => {
     navigator.clipboard.writeText(server.id);
@@ -28,13 +28,19 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
     } catch (e) {}
   };
 
+  const textChannels = server.channels.filter(c => c.type === 'text');
+  const voiceChannels = server.channels.filter(c => c.type === 'voice');
+
   return (
     <div style={{ width: '240px', backgroundColor: theme.surface, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${theme.border}`, flexShrink: 0 }}>
 
       {/* Server Header */}
       <div style={{ padding: '16px', borderBottom: `1px solid ${theme.border}` }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-          <span style={{ fontSize: '1.6rem' }}>{server.icon}</span>
+          {server.photo
+            ? <img src={server.photo} alt="server" style={{ width: 36, height: 36, borderRadius: '10px', objectFit: 'cover', flexShrink: 0 }} />
+            : <span style={{ fontSize: '1.6rem' }}>{server.icon}</span>
+          }
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <h3 style={{ color: theme.text, fontWeight: '800', fontSize: '1rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{server.name}</h3>
             <p style={{ color: theme.textSecondary, fontSize: '0.75rem' }}>{server.memberCount} member{server.memberCount !== 1 ? 's' : ''}</p>
@@ -55,14 +61,58 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
 
       {/* Channels */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 8px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', marginBottom: '6px' }}>
+
+        {/* Text Channels */}
+        {textChannels.length > 0 && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', marginBottom: '6px' }}>
+              <p style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                Text Channels
+              </p>
+              {isAdmin && (
+                <button
+                  onClick={() => { setChannelType('text'); setShowCreate(true); }}
+                  title="Add Text Channel"
+                  style={{ width: 20, height: 20, borderRadius: '4px', border: 'none', backgroundColor: 'transparent', color: theme.textSecondary, cursor: 'pointer', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}
+                >
+                  +
+                </button>
+              )}
+            </div>
+
+            {textChannels.map(ch => {
+              const isActive = activeChannelId === ch.id;
+              return (
+                <button
+                  key={ch.id}
+                  onClick={() => onJoinChannel(ch)}
+                  style={{
+                    width: '100%', padding: '8px 10px', borderRadius: '8px', border: 'none',
+                    backgroundColor: isActive ? theme.accent + '33' : 'transparent',
+                    color: isActive ? theme.accent : theme.textSecondary,
+                    cursor: 'pointer', textAlign: 'left', fontSize: '0.92rem',
+                    fontWeight: isActive ? '700' : '500',
+                    display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px',
+                    transition: 'all 0.15s ease',
+                  }}
+                >
+                  <span style={{ fontSize: '0.8rem', opacity: 0.7 }}>📢</span>
+                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.name}</span>
+                </button>
+              );
+            })}
+          </>
+        )}
+
+        {/* Voice Channels */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 8px', marginTop: textChannels.length > 0 ? '12px' : '0', marginBottom: '6px' }}>
           <p style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '1px' }}>
             Voice Channels
           </p>
           {isAdmin && (
             <button
-              onClick={() => setShowCreate(true)}
-              title="Add Channel"
+              onClick={() => { setChannelType('voice'); setShowCreate(true); }}
+              title="Add Voice Channel"
               style={{ width: 20, height: 20, borderRadius: '4px', border: 'none', backgroundColor: 'transparent', color: theme.textSecondary, cursor: 'pointer', fontSize: '1.1rem', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: '700' }}
             >
               +
@@ -70,10 +120,9 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
           )}
         </div>
 
-        {server.channels.map(ch => {
+        {voiceChannels.map(ch => {
           const usersInChannel = channelUsers[ch.id] || [];
           const isActive = activeChannelId === ch.id;
-          const iAmInChannel = usersInChannel.find(u => u.id === profile?.socketId);
 
           return (
             <div key={ch.id}>
@@ -86,7 +135,8 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
                   width: '100%', padding: '8px 10px', borderRadius: '8px', border: 'none',
                   backgroundColor: isActive ? theme.accent + '33' : 'transparent',
                   color: isActive ? theme.accent : theme.textSecondary,
-                  cursor: 'pointer', textAlign: 'left', fontSize: '0.92rem', fontWeight: isActive ? '700' : '500',
+                  cursor: 'pointer', textAlign: 'left', fontSize: '0.92rem',
+                  fontWeight: isActive ? '700' : '500',
                   display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '2px',
                   transition: 'all 0.15s ease',
                 }}
@@ -125,27 +175,44 @@ function ChannelList({ server, activeChannelId, channelUsers, onJoinChannel, onL
         <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
           <div style={{ backgroundColor: theme.surface, borderRadius: '20px', padding: '28px', width: '100%', maxWidth: '360px', border: `1px solid ${theme.border}` }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-              <h3 style={{ color: theme.text, fontWeight: '800' }}>Create Channel</h3>
+              <h3 style={{ color: theme.text, fontWeight: '800' }}>Create {channelType === 'text' ? 'Text' : 'Voice'} Channel</h3>
               <button onClick={() => setShowCreate(false)} style={{ width: 32, height: 32, borderRadius: '8px', border: 'none', backgroundColor: theme.card, color: theme.textSecondary, cursor: 'pointer' }}>✕</button>
             </div>
+
+            {/* Channel type toggle */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              <button
+                onClick={() => setChannelType('text')}
+                style={{ flex: 1, padding: '8px', borderRadius: '8px', border: `1px solid ${channelType === 'text' ? theme.accent : theme.border}`, backgroundColor: channelType === 'text' ? theme.accent + '22' : 'transparent', color: channelType === 'text' ? theme.accent : theme.textSecondary, cursor: 'pointer', fontWeight: '600', fontSize: '0.85rem' }}
+              >
+                📢 Text
+              </button>
+              <button
+                onClick={() => setChannelType('voice')}
+                style={{ flex: 1, padding: '8px', borderRadius: '8px', border: `1px solid ${channelType === 'voice' ? theme.accent : theme.border}`, backgroundColor: channelType === 'voice' ? theme.accent + '22' : 'transparent', color: channelType === 'voice' ? theme.accent : theme.textSecondary, cursor: 'pointer', fontWeight: '600', fontSize: '0.85rem' }}
+              >
+                🔊 Voice
+              </button>
+            </div>
+
             <input
               autoFocus
-              placeholder="Channel name (e.g. Gaming)"
+              placeholder={`Channel name (e.g. ${channelType === 'text' ? 'announcements' : 'Gaming'})`}
               value={channelName}
               onChange={e => setChannelName(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && (() => {
-                if (channelName.trim()) {
-                  onJoinChannel(null, channelName.trim());
+              onKeyDown={e => {
+                if (e.key === 'Enter' && channelName.trim()) {
+                  onJoinChannel(null, channelName.trim(), channelType);
                   setChannelName('');
                   setShowCreate(false);
                 }
-              })()}
+              }}
               style={{ width: '100%', padding: '12px 14px', borderRadius: '10px', border: `1px solid ${theme.border}`, backgroundColor: theme.input, color: theme.text, fontSize: '0.95rem', outline: 'none', fontFamily: 'inherit', marginBottom: '12px' }}
             />
             <button
               onClick={() => {
                 if (channelName.trim()) {
-                  onJoinChannel(null, channelName.trim());
+                  onJoinChannel(null, channelName.trim(), channelType);
                   setChannelName('');
                   setShowCreate(false);
                 }

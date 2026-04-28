@@ -6,6 +6,7 @@ import ChannelList from './components/ChannelList';
 import Room from './components/Room';
 import { io } from 'socket.io-client';
 import { SOCKET_URL } from './config';
+import TextChat from './components/TextChat';
 
 const socket = io(SOCKET_URL, { transports: ['websocket', 'polling'] });
 
@@ -138,17 +139,22 @@ function App() {
       return;
     }
     if (!ch) return;
-
-    // Don't rejoin same channel
     if (activeChannelRef.current?.id === ch.id) return;
 
-    // Leave current channel first
-    const current = activeChannelRef.current;
-    if (current) {
-      socket.emit('leave-channel', {
-        channelId: current.id,
-        serverId: activeServerRef.current?.id
-      });
+    // Only emit leave/join for voice channels
+    if (ch.type === 'voice') {
+      const current = activeChannelRef.current;
+      if (current && current.type === 'voice') {
+        socket.emit('leave-channel', {
+          channelId: current.id,
+          serverId: activeServerRef.current?.id
+        });
+      }
+      socket.emit('join-channel', {
+        channelId: ch.id,
+        serverId: activeServerRef.current?.id,
+        username: profile.username
+      });  // Room.js will also emit join-channel on mount, but that's handled by alreadyInChannel check
     }
 
     setActiveChannel(ch);
@@ -203,15 +209,25 @@ function App() {
         </div>
       )}
 
-      {/* Right — Voice Room or Welcome */}
+      {/* Right — Voice Room, Text Chat, or Welcome */}
       {activeChannel ? (
-        <Room
-          key={activeChannel.id}
-          roomInfo={{ code: activeChannel.id, name: activeChannel.name, serverId: activeServer.id }}
-          profile={profile}
-          socket={socket}
-          onLeave={handleLeaveChannel}
-        />
+        activeChannel.type === 'text' ? (
+          <TextChat
+            socket={socket}
+            channelId={activeChannel.id}
+            serverId={activeServer.id}
+            channelName={activeChannel.name}
+            profile={profile}
+          />
+        ) : (
+          <Room
+            key={activeChannel.id}
+            roomInfo={{ code: activeChannel.id, name: activeChannel.name, serverId: activeServer.id }}
+            profile={profile}
+            socket={socket}
+            onLeave={handleLeaveChannel}
+          />
+        )
       ) : (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: theme.bg }}>
           <div style={{ textAlign: 'center' }}>

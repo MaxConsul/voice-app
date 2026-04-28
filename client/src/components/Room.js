@@ -127,13 +127,18 @@ function Room({ roomInfo, profile, socket, onLeave }) {
           if (e.candidate) socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
         };
         pc.ontrack = (e) => {
-          console.log('Got remote track from:', targetId);
-          const audio = new Audio();
+          // Reuse existing audio element if possible
+          if (!audioRefs.current[targetId]) {
+            audioRefs.current[targetId] = new Audio();
+          }
+          const audio = audioRefs.current[targetId];
           audio.srcObject = e.streams[0];
           audio.autoplay = true;
           audio.muted = deafenedRef.current;
-          audioRefs.current[targetId] = audio;
-          audio.play().catch(err => console.warn('Audio play failed:', err));
+          // Append to DOM to prevent garbage collection
+          audio.style.display = 'none';
+          document.body.appendChild(audio);
+          audio.play().catch(() => {});
         };
         pc.onconnectionstatechange = () => {
           console.log(`Peer ${targetId}: ${pc.connectionState}`);
@@ -268,22 +273,12 @@ function Room({ roomInfo, profile, socket, onLeave }) {
 
       // Cleanup
       return () => {
-        socket.off('channel-existing-users', handleExistingUsers);
-        socket.off('user-joined-channel', handleUserJoined);
-        socket.off('offer', handleOffer);
-        socket.off('answer', handleAnswer);
-        socket.off('ice-candidate', handleIce);
-        socket.off('user-left', handleUserLeft);
-        socket.off('user-status', handleUserStatus);
-        socket.off('chat-message', handleChatMessage);
-        socket.off('play-sound', handlePlaySound);
-
-        // Leave channel on unmount
-        socket.emit('leave-channel', { channelId, serverId });
-
-        localStream?.getTracks().forEach(t => t.stop());
-        Object.values(peersRef.current).forEach(pc => pc.close());
-        peersRef.current = {};
+        // ... existing cleanup ...
+        // Remove audio elements from DOM
+        Object.values(audioRefs.current).forEach(audio => {
+          audio.pause();
+          if (audio.parentNode) audio.parentNode.removeChild(audio);
+        });
         audioRefs.current = {};
       };
     }).catch(err => {
