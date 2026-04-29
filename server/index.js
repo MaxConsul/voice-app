@@ -241,9 +241,16 @@ io.on('connection', (socket) => {
     }
     channels[channelId].users.push({ id: socket.id, username });
     socket.join(`channel:${channelId}`);
-    socket.to(`channel:${channelId}`).emit('user-joined-channel', { id: socket.id, username, channelId });
+
+    // Send existing users to new joiner — they will create offers to each existing user
     const existing = channels[channelId].users.filter(u => u.id !== socket.id);
     socket.emit('channel-existing-users', { users: existing, channelId });
+
+    // Tell others a new user joined — they DON'T create offers (new user does)
+    socket.to(`channel:${channelId}`).emit('user-joined-channel', {
+      id: socket.id, username, channelId
+    });
+
     io.to(`server:${serverId}`).emit('channel-users-updated', {
       channelId, users: channels[channelId].users,
     });

@@ -62,6 +62,7 @@ function Room({ roomInfo, profile, socket, onLeave }) {
   const chatBottomRef = useRef(null);
   const fileInputRef = useRef();
   const deafenedRef = useRef(false);
+  const iceCandidateQueue = useRef({});
 
   const showToast = (msg) => {
     setToast(msg);
@@ -115,45 +116,53 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       const _createPeerConnection = (targetId) => {
         if (peersRef.current[targetId]) {
           peersRef.current[targetId].close();
+          delete peersRef.current[targetId];
         }
+
         const pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
           ]
         });
-        
-        // Make sure we add audio tracks properly
-        const audioTracks = stream.getAudioTracks();
-        console.log('Adding tracks to peer:', targetId, 'tracks:', audioTracks.length);
-        stream.getTracks().forEach(track => {
-          const sender = pc.addTrack(track, stream);
-          console.log('Added track:', track.kind, track.enabled, track.readyState);
-        });
+
+        // Add all tracks
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
         pc.onicecandidate = (e) => {
-          if (e.candidate) socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
+          if (e.candidate) {
+            socket.emit('ice-candidate', { target: targetId, candidate: e.candidate });
+          }
         };
+
         pc.ontrack = (e) => {
-          // Reuse existing audio element if possible
+          console.log('Got track from:', targetId, e.streams.length);
           if (!audioRefs.current[targetId]) {
             audioRefs.current[targetId] = new Audio();
+            audioRefs.current[targetId].style.display = 'none';
+            document.body.appendChild(audioRefs.current[targetId]);
           }
           const audio = audioRefs.current[targetId];
           audio.srcObject = e.streams[0];
           audio.autoplay = true;
           audio.muted = deafenedRef.current;
-          // Append to DOM to prevent garbage collection
-          audio.style.display = 'none';
-          document.body.appendChild(audio);
-          audio.play().catch(() => {});
+          audio.play().catch(err => console.warn('Audio play failed:', err));
         };
+
+        pc.oniceconnectionstatechange = () => {
+          console.log(`ICE ${targetId}: ${pc.iceConnectionState}`);
+          if (pc.iceConnectionState === 'failed') {
+            console.log('ICE failed, restarting...');
+            pc.restartIce();
+          }
+        };
+
         pc.onconnectionstatechange = () => {
-          console.log(`Peer ${targetId}: ${pc.connectionState}`);
+          console.log(`Connection ${targetId}: ${pc.connectionState}`);
         };
-        pc.onsignalingstatechange = () => {
-          console.log(`Peer ${targetId} signaling: ${pc.signalingState}`);
-        };
+
         peersRef.current[targetId] = pc;
         return pc;
       };
@@ -190,6 +199,13 @@ function Room({ roomInfo, profile, socket, onLeave }) {
         console.log('Received offer from:', from);
         const pc = _createPeerConnection(from);
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        // Flush queued ICE candidates
+        if (iceCandidateQueue.current[from]) {
+          for (const candidate of iceCandidateQueue.current[from]) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+          }
+          delete iceCandidateQueue.current[from];
+        }
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         socket.emit('answer', { target: from, answer });
@@ -202,6 +218,13 @@ function Room({ roomInfo, profile, socket, onLeave }) {
         if (pc) {
           try {
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            // Flush queued ICE candidates
+            if (iceCandidateQueue.current[from]) {
+              for (const candidate of iceCandidateQueue.current[from]) {
+                await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+              }
+              delete iceCandidateQueue.current[from];
+            }
           } catch (e) {
             console.warn('Error setting remote description:', e);
           }
@@ -209,9 +232,19 @@ function Room({ roomInfo, profile, socket, onLeave }) {
       };
 
       // ── WebRTC: ICE candidate ────────────────────────────────
-      const handleIce = ({ from, candidate }) => {
+      const handleIce = async ({ from, candidate }) => {
         const pc = peersRef.current[from];
-        if (pc) pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn('ICE error:', e));
+        if (pc) {
+          if (pc.remoteDescription) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(e => console.warn('ICE error:', e));
+          } else {
+            // Queue candidates until remote description is set
+            if (!iceCandidateQueue.current[from]) {
+              iceCandidateQueue.current[from] = [];
+            }
+            iceCandidateQueue.current[from].push(candidate);
+          }
+        }
       };
 
       // ── User left ────────────────────────────────────────────
