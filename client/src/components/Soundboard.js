@@ -4,7 +4,7 @@ import { useTheme } from '../context/ThemeContext';
 const MAX_SOUNDS = 10;
 const MAX_DURATION = 5;
 
-function Soundboard({ socket, channelId, username, serverId }) {
+function Soundboard({ socket, roomId, username }) {
   const { theme } = useTheme();
   const [sounds, setSounds] = useState([]);
   const [playing, setPlaying] = useState(null);
@@ -12,19 +12,6 @@ function Soundboard({ socket, channelId, username, serverId }) {
   const [dragging, setDragging] = useState(false);
   const [trimming, setTrimming] = useState(null);
   const fileRef = useRef();
-
-  // ── Load server soundboard on mount ──────────────────────────
-  useEffect(() => {
-    socket.emit('soundboard-get', { serverId });
-
-    socket.on('soundboard-update', ({ sounds }) => {
-      setSounds(sounds);
-    });
-
-    return () => {
-      socket.off('soundboard-update');
-    };
-  }, [serverId]);
 
   const loadSound = (file) => {
     setError('');
@@ -43,9 +30,10 @@ function Soundboard({ socket, channelId, username, serverId }) {
       audio.onloadedmetadata = () => {
         const name = file.name.replace(/\.[^/.]+$/, '').slice(0, 20);
         if (audio.duration <= MAX_DURATION) {
-          const sound = { id: Date.now(), name, data: ev.target.result, addedBy: username };
-          socket.emit('soundboard-add', { serverId, sound });
+          // Under 5s, save directly
+          setSounds(prev => [...prev, { id: Date.now(), name, data: ev.target.result }]);
         } else {
+          // Over 5s, open trimmer
           setTrimming({
             name,
             data: ev.target.result,
@@ -56,6 +44,7 @@ function Soundboard({ socket, channelId, username, serverId }) {
         }
       };
     };
+    
     reader.readAsDataURL(file);
   };
 
@@ -77,11 +66,11 @@ function Soundboard({ socket, channelId, username, serverId }) {
     audio.play();
     setPlaying(sound.id);
     audio.onended = () => setPlaying(null);
-    socket.emit('play-sound', channelId, sound.data, sound.name);
+    socket.emit('play-sound', roomId, sound.data, sound.name);
   };
 
-  const removeSound = (soundId) => {
-    socket.emit('soundboard-remove', { serverId, soundId });
+  const removeSound = (id) => {
+    setSounds(prev => prev.filter(s => s.id !== id));
   };
 
   const saveTrimmed = async (updatedTrimming) => {
@@ -89,8 +78,7 @@ function Soundboard({ socket, channelId, username, serverId }) {
     if (!t) return;
     try {
       const trimmed = await trimAudio(t.data, t.start, t.end);
-      const sound = { id: Date.now(), name: t.name, data: trimmed, addedBy: username };
-      socket.emit('soundboard-add', { serverId, sound });
+      setSounds(prev => [...prev, { id: Date.now(), name: trimming.name, data: trimmed }]);
       setTrimming(null);
     } catch (e) {
       setError('Failed to trim audio. Please try another file.');
@@ -137,10 +125,10 @@ function Soundboard({ socket, channelId, username, serverId }) {
     const setUint16 = (data) => { view.setUint16(pos, data, true); pos += 2; };
     const setUint32 = (data) => { view.setUint32(pos, data, true); pos += 4; };
 
-    setUint32(0x46464952);
+    setUint32(0x46464952); // "RIFF"
     setUint32(length - 8);
-    setUint32(0x45564157);
-    setUint32(0x20746d66);
+    setUint32(0x45564157); // "WAVE"
+    setUint32(0x20746d66); // "fmt "
     setUint32(16);
     setUint16(1);
     setUint16(numOfChan);
@@ -148,7 +136,7 @@ function Soundboard({ socket, channelId, username, serverId }) {
     setUint32(abuffer.sampleRate * 2 * numOfChan);
     setUint16(numOfChan * 2);
     setUint16(16);
-    setUint32(0x61746164);
+    setUint32(0x61746164); // "data"
     setUint32(length - pos - 4);
 
     for (let i = 0; i < abuffer.numberOfChannels; i++) {
@@ -184,7 +172,7 @@ function Soundboard({ socket, channelId, username, serverId }) {
       <div style={{ padding: '20px 24px', borderBottom: `1px solid ${theme.border}`, backgroundColor: theme.surface }}>
         <h3 style={{ color: theme.text, fontWeight: '800' }}>Soundboard</h3>
         <p style={{ color: theme.textSecondary, fontSize: '0.8rem', marginTop: '2px' }}>
-          Shared sounds for this server — everyone hears them! 🔊
+          Upload sounds up to 5 seconds — everyone in the room hears them!
         </p>
       </div>
 
@@ -227,8 +215,7 @@ function Soundboard({ socket, channelId, username, serverId }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '12px' }}>
             {sounds.map(sound => (
               <div key={sound.id} style={{
-                backgroundColor: theme.surface,
-                border: `1px solid ${playing === sound.id ? theme.accent : theme.border}`,
+                backgroundColor: theme.surface, border: `1px solid ${playing === sound.id ? theme.accent : theme.border}`,
                 borderRadius: '14px', padding: '16px 12px', display: 'flex',
                 flexDirection: 'column', alignItems: 'center', gap: '10px',
                 position: 'relative', transition: 'all 0.2s ease',
@@ -253,16 +240,9 @@ function Soundboard({ socket, channelId, username, serverId }) {
                   {playing === sound.id ? '🔊' : '▶'}
                 </button>
 
-                <div style={{ textAlign: 'center' }}>
-                  <p style={{ color: theme.text, fontSize: '0.82rem', fontWeight: '700', wordBreak: 'break-word', lineHeight: '1.3' }}>
-                    {sound.name}
-                  </p>
-                  {sound.addedBy && (
-                    <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '2px' }}>
-                      by {sound.addedBy}
-                    </p>
-                  )}
-                </div>
+                <p style={{ color: theme.text, fontSize: '0.82rem', fontWeight: '700', textAlign: 'center', wordBreak: 'break-word', lineHeight: '1.3' }}>
+                  {sound.name}
+                </p>
               </div>
             ))}
           </div>
@@ -272,7 +252,7 @@ function Soundboard({ socket, channelId, username, serverId }) {
   );
 }
 
-// ─── Trimmer Modal ─────────────────────────────────────────────────
+// ─── Trimmer Modal ───────────────────────────────────────────────
 function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -283,7 +263,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
   const [start, setStart] = useState(0);
   const [end, setEnd] = useState(Math.min(5, duration));
   const [previewing, setPreviewing] = useState(false);
-  const [dragging, setDragging] = useState(null);
+  const [dragging, setDragging] = useState(null); // 'start' | 'end' | 'region'
   const [dragStartX, setDragStartX] = useState(null);
   const [dragStartValues, setDragStartValues] = useState(null);
   const [waveform, setWaveform] = useState(null);
@@ -292,6 +272,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
   const trimDuration = end - start;
   const isValid = trimDuration > 0 && trimDuration <= 5;
 
+  // ── Draw waveform on mount ──────────────────────────────────────
   useEffect(() => {
     const decode = async () => {
       try {
@@ -313,16 +294,15 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
         }
         setWaveform(peaks);
       } catch (e) {
+        // fallback flat waveform
         setWaveform(Array(300).fill(0.5));
       }
     };
     decode();
-    return () => {
-      if (audioRef.current) audioRef.current.pause();
-      cancelAnimationFrame(animRef.current);
-    };
+    return () => { if (audioRef.current) audioRef.current.pause(); cancelAnimationFrame(animRef.current); };
   }, []);
 
+  // ── Redraw canvas ───────────────────────────────────────────────
   useEffect(() => {
     if (!waveform || !canvasRef.current) return;
     const canvas = canvasRef.current;
@@ -336,16 +316,20 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
     const startX = startPct * W;
     const endX = endPct * W;
 
+    // Background
     ctx.fillStyle = theme.card;
     ctx.fillRect(0, 0, W, H);
 
+    // Dimmed regions
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fillRect(0, 0, startX, H);
     ctx.fillRect(endX, 0, W - endX, H);
 
+    // Selected region highlight
     ctx.fillStyle = isValid ? 'rgba(233,69,96,0.15)' : 'rgba(231,76,60,0.15)';
     ctx.fillRect(startX, 0, endX - startX, H);
 
+    // Waveform bars
     const barW = W / waveform.length;
     waveform.forEach((peak, i) => {
       const x = i * barW;
@@ -357,6 +341,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
       ctx.fillRect(x + 1, (H - barH) / 2, Math.max(barW - 1, 1), barH);
     });
 
+    // Playhead
     if (playhead !== null) {
       const px = (playhead / duration) * W;
       ctx.strokeStyle = 'white';
@@ -367,6 +352,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
       ctx.stroke();
     }
 
+    // Start handle
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(startX - 2, 0, 4, H);
     ctx.fillStyle = isValid ? '#e94560' : '#e74c3c';
@@ -378,6 +364,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
     ctx.textAlign = 'center';
     ctx.fillText('◀', startX - 5, H / 2 + 4);
 
+    // End handle
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(endX - 2, 0, 4, H);
     ctx.fillStyle = isValid ? '#e94560' : '#e74c3c';
@@ -390,6 +377,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
 
   }, [waveform, start, end, duration, isValid, theme, playhead]);
 
+  // ── Mouse interaction ───────────────────────────────────────────
   const getXPct = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const clientX = e.touches ? e.touches[0].clientX : e.clientX;
@@ -401,6 +389,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
     const startPct = start / duration;
     const endPct = end / duration;
     const threshold = 0.04;
+
     if (Math.abs(pct - startPct) < threshold) {
       setDragging('start');
     } else if (Math.abs(pct - endPct) < threshold) {
@@ -416,6 +405,7 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
     if (!dragging) return;
     const pct = getXPct(e);
     const time = pct * duration;
+
     if (dragging === 'start') {
       const newStart = Math.max(0, Math.min(time, end - 0.1));
       setStart(parseFloat(newStart.toFixed(2)));
@@ -436,15 +426,18 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
 
   const onMouseUp = () => setDragging(null);
 
+  // ── Preview ─────────────────────────────────────────────────────
   const preview = () => {
     if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
     cancelAnimationFrame(animRef.current);
+
     const audio = new Audio(trimming.data);
     audioRef.current = audio;
     audio.currentTime = start;
     audio.play();
     setPreviewing(true);
     setPlayhead(start);
+
     const startTime = performance.now();
     const animate = () => {
       const elapsed = (performance.now() - startTime) / 1000;
@@ -467,16 +460,23 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
     <div style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.75)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}>
       <div style={{ backgroundColor: theme.surface, borderRadius: '20px', padding: '28px', width: '100%', maxWidth: '520px', border: `1px solid ${theme.border}`, boxShadow: '0 24px 64px rgba(0,0,0,0.6)' }}>
 
+        {/* Header */}
         <div style={{ marginBottom: '20px' }}>
-          <h3 style={{ color: theme.text, fontWeight: '800', fontSize: '1.1rem', marginBottom: '4px' }}>Trim Sound</h3>
-          <p style={{ color: theme.textSecondary, fontSize: '0.82rem' }}>Drag the handles or the highlighted region — max 5 seconds</p>
+          <h3 style={{ color: theme.text, fontWeight: '800', fontSize: '1.1rem', marginBottom: '4px' }}>
+            Trim Sound
+          </h3>
+          <p style={{ color: theme.textSecondary, fontSize: '0.82rem' }}>
+            Drag the handles or the highlighted region — max 5 seconds
+          </p>
         </div>
 
+        {/* File name */}
         <div style={{ backgroundColor: theme.card, borderRadius: '10px', padding: '10px 14px', marginBottom: '16px', border: `1px solid ${theme.border}` }}>
           <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.88rem' }}>🎵 {trimming.name}</p>
           <p style={{ color: theme.textSecondary, fontSize: '0.76rem', marginTop: '2px' }}>Total length: {fmt(duration)}</p>
         </div>
 
+        {/* Waveform canvas */}
         <div ref={containerRef} style={{ position: 'relative', marginBottom: '12px', borderRadius: '12px', overflow: 'hidden', border: `1px solid ${theme.border}` }}>
           {!waveform ? (
             <div style={{ height: 100, backgroundColor: theme.card, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -499,12 +499,14 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
           )}
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px' }}>
+        {/* Time labels */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '16px', paddingLeft: '2px', paddingRight: '2px' }}>
           <span style={{ color: theme.textSecondary, fontSize: '0.76rem' }}>0s</span>
           <span style={{ color: theme.textSecondary, fontSize: '0.76rem' }}>{fmt(duration / 2)}</span>
           <span style={{ color: theme.textSecondary, fontSize: '0.76rem' }}>{fmt(duration)}</span>
         </div>
 
+        {/* Selection info */}
         <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
           <div style={{ flex: 1, backgroundColor: theme.card, borderRadius: '10px', padding: '10px 14px', border: `1px solid ${theme.border}`, textAlign: 'center' }}>
             <p style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '2px' }}>Start</p>
@@ -520,12 +522,14 @@ function TrimmerModal({ trimming, setTrimming, saveTrimmed, theme }) {
           </div>
         </div>
 
+        {/* Helper text */}
         <p style={{ color: theme.textSecondary, fontSize: '0.78rem', textAlign: 'center', marginBottom: '20px' }}>
           {isValid
             ? '✅ Drag handles to adjust · Drag region to move · Preview to listen'
             : '❌ Selection is too long — drag the handles inward to shorten it'}
         </p>
 
+        {/* Buttons */}
         <div style={{ display: 'flex', gap: '10px' }}>
           <button
             onClick={() => { if (audioRef.current) audioRef.current.pause(); setTrimming(null); }}

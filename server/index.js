@@ -21,7 +21,6 @@ const servers = {};
 const channels = {};
 const audexQueues = {};
 const audexActive = {};
-const serverSoundboards = {}; // { serverId: [{ id, name, data, addedBy }] }
 
 // Audex config
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
@@ -188,8 +187,7 @@ io.on('connection', (socket) => {
     socket.join(`server:${serverId}`);
     socket.emit('server-joined', getServerSummary(srv));
     socket.to(`server:${serverId}`).emit('member-joined', { id: socket.id, username });
-    // Broadcast updated member count
-    io.to(`server:${serverId}`).emit('member-count-updated', { memberCount: srv.members.length });
+    console.log(`${username} joined server "${srv.name}" (${serverId})`);
   });
 
   // ── Create Channel ────────────────────────────────────────────
@@ -502,42 +500,6 @@ io.on('connection', (socket) => {
     playNext(channelId);
   });
 
-  // ── Soundboard: Get sounds ────────────────────────────────────
-  socket.on('soundboard-get', ({ serverId }) => {
-    socket.emit('soundboard-update', {
-      sounds: serverSoundboards[serverId] || []
-    });
-  });
-
-  // ── Soundboard: Add sound ─────────────────────────────────────
-  socket.on('soundboard-add', ({ serverId, sound }) => {
-    if (!serverSoundboards[serverId]) serverSoundboards[serverId] = [];
-    // Max 10 sounds per server
-    if (serverSoundboards[serverId].length >= 10) {
-      socket.emit('server-error', 'Maximum 10 sounds per server!');
-      return;
-    }
-    serverSoundboards[serverId].push(sound);
-    io.to(`server:${serverId}`).emit('soundboard-update', {
-      sounds: serverSoundboards[serverId]
-    });
-  });
-
-  // ── Soundboard: Remove sound ──────────────────────────────────
-  socket.on('soundboard-remove', ({ serverId, soundId }) => {
-    if (!serverSoundboards[serverId]) return;
-    serverSoundboards[serverId] = serverSoundboards[serverId].filter(s => s.id !== soundId);
-    io.to(`server:${serverId}`).emit('soundboard-update', {
-      sounds: serverSoundboards[serverId]
-    });
-  });
-
-  // ── Soundboard: Play sound (broadcast with low latency) ───────
-  socket.on('play-sound', (channelId, soundData, soundName) => {
-    // Send immediately to all others with no processing
-    socket.to(`channel:${channelId}`).emit('play-sound', { soundData, soundName });
-  });
-
   // ── WebRTC passthrough ────────────────────────────────────────
   socket.on('offer', (data) => socket.to(data.target).emit('offer', { ...data, from: socket.id }));
   socket.on('answer', (data) => socket.to(data.target).emit('answer', { ...data, from: socket.id }));
@@ -559,15 +521,7 @@ io.on('connection', (socket) => {
       }
     });
     Object.values(servers).forEach(srv => {
-      const wasMember = srv.members.find(m => m.id === socket.id);
       srv.members = srv.members.filter(m => m.id !== socket.id);
-      if (wasMember) {
-        // Notify server of updated member count
-        io.to(`server:${srv.id}`).emit('member-left', {
-          id: socket.id,
-          memberCount: srv.members.length
-        });
-      }
       if (srv.members.length === 0) {
         srv.channels.forEach(ch => delete channels[ch.id]);
         delete servers[srv.id];

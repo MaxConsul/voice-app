@@ -612,7 +612,7 @@ function Room({ roomInfo, profile, socket, onLeave }) {
 
       {/* Soundboard Panel */}
       {soundboardOpen && (
-        <Soundboard socket={socket} channelId={channelId} username={username} serverId={serverId} />
+        <Soundboard socket={socket} roomId={channelId} username={username} />
       )}
 
       {/* Audex Panel */}

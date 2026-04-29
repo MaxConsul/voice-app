@@ -97,14 +97,6 @@ function App() {
       }));
     });
 
-    socket.on('member-count-updated', ({ memberCount }) => {
-      setActiveServer(prev => prev ? { ...prev, memberCount } : prev);
-    });
-
-    socket.on('member-left', ({ memberCount }) => {
-      setActiveServer(prev => prev ? { ...prev, memberCount } : prev);
-    });
-
     return () => {
       socket.off('server-created');
       socket.off('server-joined');
@@ -115,8 +107,6 @@ function App() {
       socket.off('you-are-admin');
       socket.off('member-joined');
       socket.off('user-left-channel');
-      socket.off('member-count-updated');
-      socket.off('member-left');
     };
   }, []);
 
@@ -171,15 +161,9 @@ function App() {
   };
 
   const handleLeaveChannel = () => {
-    if (activeChannelRef.current && activeChannelRef.current.type === 'voice') {
-      setChannelUsers(prev => ({
-        ...prev,
-        [activeChannelRef.current.id]: (prev[activeChannelRef.current.id] || [])
-          .filter(u => u.id !== socket.id)
-      }));
-    }
     setActiveChannel(null);
   };
+
   if (screen === 'avatar') {
     return <AvatarSetup onDone={handleAvatarDone} />;
   }
