@@ -123,9 +123,23 @@ function Room({ roomInfo, profile, socket, onLeave }) {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-          ]
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            },
+            {
+              urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+              username: 'openrelayproject',
+              credential: 'openrelayproject'
+            }
+          ],
+          iceTransportPolicy: 'all',
         });
 
         // Add all tracks
@@ -161,6 +175,26 @@ function Room({ roomInfo, profile, socket, onLeave }) {
 
         pc.onconnectionstatechange = () => {
           console.log(`Connection ${targetId}: ${pc.connectionState}`);
+        };
+
+        pc.onconnectionstatechange = () => {
+          console.log(`Connection ${targetId}: ${pc.connectionState}`);
+          if (pc.connectionState === 'failed') {
+            console.log('Connection failed, attempting restart...');
+            pc.restartIce();
+          }
+        };
+
+        pc.onnegotiationneeded = async () => {
+          try {
+            if (pc.signalingState === 'stable') {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              socket.emit('offer', { target: targetId, offer });
+            }
+          } catch (e) {
+            console.warn('Renegotiation error:', e);
+          }
         };
 
         peersRef.current[targetId] = pc;
