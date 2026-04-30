@@ -588,8 +588,23 @@ function Room({ roomInfo, profile, socket, onLeave }) {
             {messages.map((msg, i) => {
               const isSelf = msg.username === username;
               const isBot = msg.isBot;
+              const currentDate = msg.time?.split(',')[0] || '';
+              const prevDate = i > 0 ? messages[i-1]?.time?.split(',')[0] || '' : '';
+              const showDateSeparator = i === 0 || currentDate !== prevDate;
+              const timeOnly = msg.time?.split(',')[1]?.trim() || msg.time || '';
               return (
-                <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isBot ? 'flex-start' : isSelf ? 'flex-end' : 'flex-start' }}>
+                <div key={i}>
+                  {showDateSeparator && currentDate && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '8px 0 16px 0' }}>
+                      <div style={{ flex: 1, height: 1, backgroundColor: theme.border }} />
+                      <span style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', whiteSpace: 'nowrap', backgroundColor: theme.bg, padding: '0 8px' }}>
+                        {currentDate}
+                      </span>
+                      <div style={{ flex: 1, height: 1, backgroundColor: theme.border }} />
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: isBot ? 'flex-start' : isSelf ? 'flex-end' : 'flex-start' }}>
+
                   {(!isSelf || isBot) && (
                     <p style={{ color: isBot ? theme.accent : theme.textSecondary, fontSize: '0.78rem', marginBottom: '4px', paddingLeft: '4px', fontWeight: isBot ? '700' : '400' }}>
                       {msg.username}
@@ -611,7 +626,8 @@ function Room({ roomInfo, profile, socket, onLeave }) {
                         </p>
                       </div>
                   }
-                  <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '3px', paddingLeft: '4px', paddingRight: '4px' }}>{msg.time}</p>
+                  <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '3px', paddingLeft: '4px', paddingRight: '4px' }}>{timeOnly}</p>
+                  </div>
                 </div>
               );
             })}

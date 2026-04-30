@@ -67,7 +67,12 @@ const audexMessage = (channelId, message) => {
     message,
     type: 'text',
     isBot: true,
-    time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    time: new Date().toLocaleString([], { 
+      month: 'short', 
+      day: 'numeric',
+      hour: '2-digit', 
+      minute: '2-digit' 
+    })
   });
 };
 
@@ -220,9 +225,8 @@ io.on('connection', (socket) => {
     if (!channels[channelId]) return;
     const alreadyInChannel = channels[channelId].users.find(u => u.id === socket.id);
     if (alreadyInChannel) {
-      const existing = channels[channelId].users.filter(u => u.id !== socket.id);
-      socket.emit('channel-existing-users', { users: existing, channelId });
-      return;
+      // Remove and re-add to ensure fresh state
+      channels[channelId].users = channels[channelId].users.filter(u => u.id !== socket.id);
     }
     const prevChannel = Object.entries(channels).find(([id, ch]) =>
       id !== channelId && ch.users.find(u => u.id === socket.id)
@@ -282,7 +286,12 @@ io.on('connection', (socket) => {
   socket.on('chat-message', (channelId, message, username, type = 'text') => {
     io.to(`channel:${channelId}`).emit('chat-message', {
       username, message, type,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      time: new Date().toLocaleString([], { 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit', 
+        minute: '2-digit' 
+      })
     });
     if (message.toLowerCase().trim() === '!invite audex') {
       if (!audexActive[channelId]) {
@@ -309,7 +318,12 @@ io.on('connection', (socket) => {
     if (!ch) return;
     const msg = {
       username, message,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      time: new Date().toLocaleString([], { 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit', 
+        minute: '2-digit' 
+      })
     };
     if (!ch.messages) ch.messages = [];
     ch.messages.push(msg);
@@ -321,7 +335,12 @@ io.on('connection', (socket) => {
   socket.on('chat-image', (channelId, imageData, username) => {
     io.to(`channel:${channelId}`).emit('chat-message', {
       username, message: imageData, type: 'image',
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      time: new Date().toLocaleString([], { 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit', 
+        minute: '2-digit' 
+      })
     });
   });
 

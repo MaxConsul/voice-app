@@ -10,7 +10,6 @@ function TextChat({ socket, channelId, serverId, channelName, profile }) {
   const fileRef = useRef(null);
 
   useEffect(() => {
-    // Load message history
     socket.emit('get-text-messages', { channelId });
 
     socket.on('text-messages', ({ channelId: cId, messages }) => {
@@ -67,6 +66,18 @@ function TextChat({ socket, channelId, serverId, channelName, profile }) {
     setImagePreview(null);
   };
 
+  const getDateLabel = (time) => {
+    if (!time) return '';
+    const parts = time.split(',');
+    return parts[0] || '';
+  };
+
+  const getTimeOnly = (time) => {
+    if (!time) return '';
+    const parts = time.split(',');
+    return parts[1]?.trim() || time;
+  };
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: theme.bg }}>
 
@@ -86,23 +97,56 @@ function TextChat({ socket, channelId, serverId, channelName, profile }) {
             <p style={{ color: theme.textSecondary, fontSize: '0.88rem' }}>This is the beginning of the server chat.</p>
           </div>
         )}
+
         {messages.map((msg, i) => {
           const isSelf = msg.username === profile.username;
+          const currentDate = getDateLabel(msg.time);
+          const prevDate = i > 0 ? getDateLabel(messages[i - 1].time) : null;
+          const showDateSeparator = i === 0 || currentDate !== prevDate;
+
           return (
-            <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: isSelf ? 'flex-end' : 'flex-start' }}>
-              {!isSelf && (
-                <p style={{ color: theme.textSecondary, fontSize: '0.78rem', marginBottom: '4px', paddingLeft: '4px' }}>
-                  {msg.username}
-                </p>
+            <div key={i}>
+              {/* Date separator */}
+              {showDateSeparator && currentDate && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '8px 0 16px 0' }}>
+                  <div style={{ flex: 1, height: 1, backgroundColor: theme.border }} />
+                  <span style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', whiteSpace: 'nowrap', backgroundColor: theme.bg, padding: '0 8px' }}>
+                    {currentDate}
+                  </span>
+                  <div style={{ flex: 1, height: 1, backgroundColor: theme.border }} />
+                </div>
               )}
-              {msg.type === 'image'
-                ? <img src={msg.message} alt="shared" style={{ maxWidth: '260px', borderRadius: '12px', cursor: 'pointer' }}
-                    onClick={() => { const w = window.open(); w.document.write(`<img src="${msg.message}" style="max-width:100%;height:auto;" />`); }} />
-                : <div style={{ backgroundColor: isSelf ? theme.accent : theme.surface, padding: '10px 14px', borderRadius: isSelf ? '14px 14px 4px 14px' : '14px 14px 14px 4px', maxWidth: '400px', border: `1px solid ${theme.border}` }}>
-                    <p style={{ color: isSelf ? 'white' : theme.text, wordBreak: 'break-word', fontSize: '0.95rem' }}>{msg.message}</p>
-                  </div>
-              }
-              <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '3px', paddingLeft: '4px', paddingRight: '4px' }}>{msg.time}</p>
+
+              {/* Message */}
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: isSelf ? 'flex-end' : 'flex-start' }}>
+                {!isSelf && (
+                  <p style={{ color: theme.textSecondary, fontSize: '0.78rem', marginBottom: '4px', paddingLeft: '4px' }}>
+                    {msg.username}
+                  </p>
+                )}
+                {msg.type === 'image'
+                  ? <img
+                      src={msg.message}
+                      alt="shared"
+                      style={{ maxWidth: '260px', borderRadius: '12px', cursor: 'pointer' }}
+                      onClick={() => { const w = window.open(); w.document.write(`<img src="${msg.message}" style="max-width:100%;height:auto;" />`); }}
+                    />
+                  : <div style={{
+                      backgroundColor: isSelf ? theme.accent : theme.surface,
+                      padding: '10px 14px',
+                      borderRadius: isSelf ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                      maxWidth: '400px',
+                      border: `1px solid ${theme.border}`
+                    }}>
+                      <p style={{ color: isSelf ? 'white' : theme.text, wordBreak: 'break-word', fontSize: '0.95rem' }}>
+                        {msg.message}
+                      </p>
+                    </div>
+                }
+                <p style={{ color: theme.textSecondary, fontSize: '0.7rem', marginTop: '3px', paddingLeft: '4px', paddingRight: '4px' }}>
+                  {getTimeOnly(msg.time)}
+                </p>
+              </div>
             </div>
           );
         })}
