@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useTheme } from '../context/ThemeContext';
-import { PROXY_URL } from '../config';
+
+const SERVER_URL = process.env.REACT_APP_SERVER_URL || 'https://warplabs.duckdns.org';
 
 function Audex({ socket, channelId, username, isActive, onInvite }) {
   const { theme } = useTheme();
@@ -9,16 +10,13 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
   const [duration, setDuration] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
-  const [query, setQuery] = useState('');
-  const [view, setView] = useState('search'); 
   const [buffering, setBuffering] = useState(false);
   const [streamError, setStreamError] = useState('');
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
   const audioRef = useRef(null);
   const timerRef = useRef(null);
-  const [playbackBlocked, setPlaybackBlocked] = useState(false);
 
   useEffect(() => {
-    // Get current state when panel opens
     socket.emit('audex-get-state', { channelId });
 
     socket.on('audex-state', ({ active, current, queue }) => {
@@ -27,52 +25,70 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
     });
 
     socket.on('audex-stream-url', ({ streamUrl, title, duration, addedBy }) => {
+      // Stop any existing audio
       if (audioRef.current) {
         audioRef.current.pause();
-        clearInterval(timerRef.current);
+        audioRef.current.src = '';
+        audioRef.current = null;
       }
+      clearInterval(timerRef.current);
 
       setBuffering(true);
+      setStreamError('');
+      setPlaybackBlocked(false);
       setNowPlaying({ title, duration, addedBy });
       setDuration(parseInt(duration));
       setElapsed(0);
-      setView('search');
-      setQuery('');
 
-      const audio = new Audio(streamUrl);
+      // Build full URL — proxy is on the server, not the frontend
+      const fullUrl = streamUrl.startsWith('http')
+        ? streamUrl
+        : `${SERVER_URL}${streamUrl}`;
+
+      console.log('Playing audio from:', fullUrl);
+
+      const audio = new Audio();
       audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
       audioRef.current = audio;
 
-      // Loading events
       audio.onwaiting = () => setBuffering(true);
-      audio.onplaying = () => setBuffering(false);
+      audio.onplaying = () => {
+        setBuffering(false);
+        setPlaybackBlocked(false);
+      };
       audio.oncanplay = () => setBuffering(false);
 
-      audio.onerror = () => {
+      audio.onerror = (e) => {
+        console.error('Audio error:', e, audio.error);
         setBuffering(false);
         setStreamError('Failed to load audio. Try skipping to next song.');
         setTimeout(() => setStreamError(''), 5000);
       };
 
-      // Try to play, if blocked show a play button instead
-      audio.play().catch(() => {
+      audio.ontimeupdate = () => {
+        setElapsed(Math.floor(audio.currentTime));
+      };
+
+      audio.onended = () => {
+        clearInterval(timerRef.current);
+      };
+
+      // Set src after setting up event listeners
+      audio.src = fullUrl;
+      audio.load();
+
+      audio.play().catch((err) => {
+        console.warn('Autoplay blocked:', err);
         setBuffering(false);
         setPlaybackBlocked(true);
       });
-
-      timerRef.current = setInterval(() => {
-        if (!audio.paused) {
-          setElapsed(Math.floor(audio.currentTime));
-        }
-        if (audio.ended) {
-          clearInterval(timerRef.current);
-        }
-      }, 1000);
     });
 
     socket.on('audex-stopped', () => {
       if (audioRef.current) {
         audioRef.current.pause();
+        audioRef.current.src = '';
         audioRef.current = null;
       }
       clearInterval(timerRef.current);
@@ -80,11 +96,12 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
       setElapsed(0);
       setDuration(0);
       setQueue([]);
-      setPlaybackBlocked(false); // 👈 add this
+      setPlaybackBlocked(false);
+      setBuffering(false);
+      setStreamError('');
     });
 
     socket.on('audex-invited', () => {
-      // Refresh state
       socket.emit('audex-get-state', { channelId });
     });
 
@@ -93,7 +110,10 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
       socket.off('audex-stream-url');
       socket.off('audex-stopped');
       socket.off('audex-invited');
-      if (audioRef.current) audioRef.current.pause();
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
       clearInterval(timerRef.current);
     };
   }, [channelId]);
@@ -112,8 +132,16 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
     sendCommand(`!play ${searchQuery.trim()}`);
     setSearchQuery('');
     setBuffering(true);
-    // Reset buffering if nothing comes back in 15 seconds
     setTimeout(() => setBuffering(false), 15000);
+  };
+
+  const handleClickToPlay = () => {
+    if (audioRef.current) {
+      audioRef.current.play().then(() => {
+        setPlaybackBlocked(false);
+        setBuffering(false);
+      }).catch(console.error);
+    }
   };
 
   const fmt = (s) => {
@@ -125,7 +153,6 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
 
   const progress = duration > 0 ? (elapsed / duration) * 100 : 0;
 
-  // Not invited yet
   if (!isActive) {
     return (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: theme.bg }}>
@@ -186,33 +213,35 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
         {nowPlaying ? (
           <div style={{ backgroundColor: theme.surface, border: `1px solid ${buffering ? theme.warning : theme.accent}`, borderRadius: '14px', padding: '16px', boxShadow: `0 0 20px ${theme.accent}22`, transition: 'border-color 0.3s ease' }}>
 
-            {/* Stream error */}
             {streamError && (
               <div style={{ backgroundColor: theme.danger + '22', border: `1px solid ${theme.danger}`, borderRadius: '8px', padding: '8px 12px', marginBottom: '12px' }}>
                 <p style={{ color: theme.danger, fontSize: '0.82rem' }}>❌ {streamError}</p>
               </div>
             )}
 
-            {/* Buffering indicator */}
             {buffering && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', backgroundColor: theme.warning + '22', borderRadius: '8px', padding: '8px 12px' }}>
-                <div style={{ display: 'flex', gap: '4px' }}>
-                  {[0, 1, 2].map(i => (
-                    <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: theme.warning, animation: `audexDot 0.8s ${i * 0.2}s infinite` }} />
-                  ))}
-                </div>
-                <p style={{ color: theme.warning, fontSize: '0.82rem', fontWeight: '600' }}>Buffering...</p>
+                <p style={{ color: theme.warning, fontSize: '0.82rem', fontWeight: '600' }}>⏳ Buffering...</p>
+              </div>
+            )}
+
+            {playbackBlocked && (
+              <div
+                onClick={handleClickToPlay}
+                style={{ backgroundColor: theme.accent, borderRadius: '10px', padding: '12px', textAlign: 'center', cursor: 'pointer', marginBottom: '12px' }}
+              >
+                <p style={{ color: 'white', fontWeight: '700', fontSize: '0.9rem' }}>▶ Click to start playback</p>
+                <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.78rem', marginTop: '2px' }}>Browser blocked autoplay — click to continue</p>
               </div>
             )}
 
             <p style={{ color: theme.textSecondary, fontSize: '0.72rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>
-              {buffering ? 'Loading...' : 'Now Playing'}
+              {buffering ? 'Loading...' : '▶ Now Playing'}
             </p>
             <p style={{ color: theme.text, fontWeight: '700', fontSize: '0.92rem', marginBottom: '4px' }}>{nowPlaying.title}</p>
             <p style={{ color: theme.textSecondary, fontSize: '0.75rem', marginBottom: '12px' }}>Added by {nowPlaying.addedBy}</p>
 
-            {/* Progress */}
-            <div style={{ height: 4, backgroundColor: theme.card, borderRadius: 2, overflow: 'hidden', marginBottom: '6px', cursor: 'pointer' }}>
+            <div style={{ height: 4, backgroundColor: theme.card, borderRadius: 2, overflow: 'hidden', marginBottom: '6px' }}>
               <div style={{ height: '100%', width: `${progress}%`, backgroundColor: theme.accent, borderRadius: 2, transition: 'width 1s linear' }} />
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
@@ -220,7 +249,6 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
               <span style={{ color: theme.textSecondary, fontSize: '0.72rem' }}>{fmt(duration)}</span>
             </div>
 
-            {/* Controls */}
             <div style={{ display: 'flex', gap: '8px' }}>
               <button
                 onClick={() => sendCommand('!skip')}
@@ -240,32 +268,6 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
           <div style={{ backgroundColor: theme.surface, borderRadius: '14px', padding: '16px', border: `1px solid ${theme.border}`, textAlign: 'center' }}>
             <p style={{ fontSize: '1.5rem', marginBottom: '6px' }}>🎵</p>
             <p style={{ color: theme.textSecondary, fontSize: '0.88rem' }}>Nothing playing. Search for a song!</p>
-          </div>
-        )}
-
-        {/* Click to play if blocked */}
-        {playbackBlocked && (
-          <div
-            onClick={() => {
-              if (audioRef.current) {
-                audioRef.current.play().then(() => {
-                  setPlaybackBlocked(false);
-                  setBuffering(false);
-                }).catch(() => {});
-              }
-            }}
-            style={{
-              backgroundColor: theme.accent, borderRadius: '10px',
-              padding: '12px', textAlign: 'center', cursor: 'pointer',
-              marginBottom: '12px',
-            }}
-          >
-            <p style={{ color: 'white', fontWeight: '700', fontSize: '0.9rem' }}>
-              ▶ Click to start playback
-            </p>
-            <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.78rem', marginTop: '2px' }}>
-              Browser blocked autoplay — click to continue
-            </p>
           </div>
         )}
 
