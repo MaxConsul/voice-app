@@ -2,6 +2,7 @@ const { execFile } = require('child_process');
 const util = require('util');
 const execFileAsync = util.promisify(execFile);
 const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -24,6 +25,7 @@ const audexActive = {};
 
 // Audex config
 const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+const TEMP_COOKIES_PATH = '/tmp/yt-cookies-temp.txt';
 const YTDLP_PATH = process.platform === 'win32'
   ? path.join(__dirname, 'node_modules', 'yt-dlp-exec', 'bin', 'yt-dlp.exe')
   : '/usr/local/bin/yt-dlp';
@@ -76,6 +78,18 @@ const audexMessage = (channelId, message) => {
   });
 };
 
+// Copy cookies to temp file so yt-dlp never overwrites the original
+const getTempCookies = () => {
+  try {
+    fs.copyFileSync(COOKIES_PATH, TEMP_COOKIES_PATH);
+    fs.chmodSync(TEMP_COOKIES_PATH, 0o644);
+    return TEMP_COOKIES_PATH;
+  } catch (e) {
+    console.error('Failed to copy cookies:', e.message);
+    return COOKIES_PATH; // fallback to original
+  }
+};
+
 const playNext = async (channelId) => {
   const state = getAudexState(channelId);
   if (state.queue.length === 0) {
@@ -97,12 +111,15 @@ const playNext = async (channelId) => {
     console.log('Cookies at:', COOKIES_PATH);
     console.log('URL:', next.url);
 
+    // Use a temp copy of cookies so yt-dlp never overwrites the original
+    const tempCookies = getTempCookies();
+
     const { stdout } = await execFileAsync(YTDLP_PATH, [
       next.url,
       '--dump-single-json',
       '--no-warnings',
       '--no-check-certificate',
-      '--cookies', COOKIES_PATH,
+      '--cookies', tempCookies,
       '--js-runtimes', 'node',
     ], { maxBuffer: 10 * 1024 * 1024 });
 

@@ -15,6 +15,7 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
   const [streamError, setStreamError] = useState('');
   const audioRef = useRef(null);
   const timerRef = useRef(null);
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
 
   useEffect(() => {
     // Get current state when panel opens
@@ -53,10 +54,10 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
         setTimeout(() => setStreamError(''), 5000);
       };
 
+      // Try to play, if blocked show a play button instead
       audio.play().catch(() => {
         setBuffering(false);
-        setStreamError('Playback blocked. Click anywhere and try again.');
-        setTimeout(() => setStreamError(''), 5000);
+        setPlaybackBlocked(true);
       });
 
       timerRef.current = setInterval(() => {
@@ -79,6 +80,7 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
       setElapsed(0);
       setDuration(0);
       setQueue([]);
+      setPlaybackBlocked(false); // 👈 add this
     });
 
     socket.on('audex-invited', () => {
@@ -238,6 +240,32 @@ function Audex({ socket, channelId, username, isActive, onInvite }) {
           <div style={{ backgroundColor: theme.surface, borderRadius: '14px', padding: '16px', border: `1px solid ${theme.border}`, textAlign: 'center' }}>
             <p style={{ fontSize: '1.5rem', marginBottom: '6px' }}>🎵</p>
             <p style={{ color: theme.textSecondary, fontSize: '0.88rem' }}>Nothing playing. Search for a song!</p>
+          </div>
+        )}
+
+        {/* Click to play if blocked */}
+        {playbackBlocked && (
+          <div
+            onClick={() => {
+              if (audioRef.current) {
+                audioRef.current.play().then(() => {
+                  setPlaybackBlocked(false);
+                  setBuffering(false);
+                }).catch(() => {});
+              }
+            }}
+            style={{
+              backgroundColor: theme.accent, borderRadius: '10px',
+              padding: '12px', textAlign: 'center', cursor: 'pointer',
+              marginBottom: '12px',
+            }}
+          >
+            <p style={{ color: 'white', fontWeight: '700', fontSize: '0.9rem' }}>
+              ▶ Click to start playback
+            </p>
+            <p style={{ color: 'rgba(255,255,255,0.7)', fontSize: '0.78rem', marginTop: '2px' }}>
+              Browser blocked autoplay — click to continue
+            </p>
           </div>
         )}
 
